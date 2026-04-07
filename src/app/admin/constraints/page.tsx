@@ -1,8 +1,5 @@
-'use client';
-
-import React from 'react';
-import ConstraintManager from '@/components/admin/ConstraintManager';
+import { redirect } from 'next/navigation';
 
 export default function ConstraintsPage() {
-  return <ConstraintManager />;
+  redirect('/admin/strategy');
 }

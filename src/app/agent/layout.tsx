@@ -44,13 +44,13 @@ export default function AgentLayout({ children }: { children: React.ReactNode })
   return (
     <Layout style={{ minHeight: '100vh' }}>
       <Header style={{
-        background: '#fff',
+        background: 'rgba(255,255,255,0.92)',
         padding: '0 24px',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'space-between',
-        borderBottom: '1px solid #f0f0f0',
-        boxShadow: '0 1px 4px rgba(0,0,0,0.05)',
+        borderBottom: '1px solid #e7ebf3',
+        boxShadow: '0 12px 40px rgba(16,36,71,0.06)',
       }}>
         <Space>
           <Title level={4} style={{ margin: 0 }}>YokoAgent</Title>
@@ -69,7 +69,7 @@ export default function AgentLayout({ children }: { children: React.ReactNode })
           </Button>
         </Space>
       </Header>
-      <Content style={{ padding: 24, background: '#f5f5f5' }}>
+      <Content style={{ padding: 24, background: 'transparent' }}>
         {children}
       </Content>
     </Layout>

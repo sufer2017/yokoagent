@@ -1,8 +1,5 @@
-'use client';
-
-import React from 'react';
-import BudgetManager from '@/components/admin/BudgetManager';
+import { redirect } from 'next/navigation';
 
 export default function BudgetsPage() {
-  return <BudgetManager />;
+  redirect('/admin/strategy');
 }

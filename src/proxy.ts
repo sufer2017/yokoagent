@@ -40,7 +40,7 @@ export async function proxy(request: NextRequest) {
   }
 
   if (pathname.startsWith('/agent') && payload.role !== 'agent') {
-    return NextResponse.redirect(new URL('/admin/overview', request.url));
+    return NextResponse.redirect(new URL('/admin/strategy', request.url));
   }
 
   if (pathname.startsWith('/admin') && payload.role !== 'admin') {

@@ -4,9 +4,9 @@ import React, { useEffect, useState } from 'react';
 import { Layout, Typography, Button, Space, Spin, Tabs } from 'antd';
 import {
   DashboardOutlined,
-  TeamOutlined,
-  DollarOutlined,
-  SafetyCertificateOutlined,
+  ApartmentOutlined,
+  FundProjectionScreenOutlined,
+  FileTextOutlined,
   LogoutOutlined,
   CrownOutlined,
 } from '@ant-design/icons';
@@ -17,10 +17,10 @@ const { Header, Content } = Layout;
 const { Text } = Typography;
 
 const TAB_ITEMS = [
+  { key: '/admin/strategy', icon: <FundProjectionScreenOutlined />, label: '策略台' },
   { key: '/admin/overview', icon: <DashboardOutlined />, label: '数据总览' },
-  { key: '/admin/agents', icon: <TeamOutlined />, label: '代理池管理' },
-  { key: '/admin/budgets', icon: <DollarOutlined />, label: '预算与分配' },
-  { key: '/admin/constraints', icon: <SafetyCertificateOutlined />, label: '约束配置' },
+  { key: '/admin/management', icon: <ApartmentOutlined />, label: '渠道与代理管理' },
+  { key: '/admin/reports', icon: <FileTextOutlined />, label: '日报中心' },
 ];
 
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
@@ -70,7 +70,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
         }}>
           <Space>
             <CrownOutlined style={{ color: '#faad14' }} />
-            <Text strong>管理员控制台</Text>
+            <Text strong>管理员策略控制台</Text>
           </Space>
           <Space>
             <Text type="secondary">{session?.role === 'admin' ? '管理员' : ''}</Text>

@@ -2,11 +2,16 @@ import { NextResponse } from 'next/server';
 import { createServerSupabase } from '@/lib/supabase/server';
 import { signToken } from '@/lib/auth/jwt';
 import type { LoginRequest } from '@/types/auth';
+import { mockAgents } from '@/lib/mock/seed';
 
 const COOKIE_NAME = 'yokoagent_token';
 const COOKIE_MAX_AGE = 60 * 60 * 24; // 24 hours
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'yzy19990704@';
+
+function hasSupabaseConfig() {
+  return Boolean(process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY);
+}
 
 export async function POST(request: Request) {
   try {
@@ -22,7 +27,6 @@ export async function POST(request: Request) {
 
     // ---- Agent Login ----
     if (role === 'agent') {
-      const supabase = createServerSupabase();
       const { name } = body;
       if (!name || !name.trim()) {
         return NextResponse.json(
@@ -31,13 +35,31 @@ export async function POST(request: Request) {
         );
       }
 
-      const { data: agent, error } = await supabase
-        .from('agents')
-        .select('id, name, is_active')
-        .eq('name', name.trim())
-        .single();
+      let agent: { id: string; name: string; is_active: boolean } | null = null;
 
-      if (error || !agent) {
+      if (hasSupabaseConfig()) {
+        const supabase = createServerSupabase();
+        const { data, error } = await supabase
+          .from('agents')
+          .select('id, name, is_active')
+          .eq('name', name.trim())
+          .single();
+
+        if (!error && data) {
+          agent = data;
+        }
+      } else {
+        const fallbackAgent = mockAgents.find((item) => item.name === name.trim());
+        if (fallbackAgent) {
+          agent = {
+            id: fallbackAgent.id,
+            name: fallbackAgent.name,
+            is_active: fallbackAgent.is_active,
+          };
+        }
+      }
+
+      if (!agent) {
         return NextResponse.json(
           { success: false, message: '该姓名不在代理池中，请联系管理员' },
           { status: 401 }

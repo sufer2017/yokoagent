@@ -1,8 +1,5 @@
-'use client';
-
-import React from 'react';
-import AgentPoolTable from '@/components/admin/AgentPoolTable';
+import { redirect } from 'next/navigation';
 
 export default function AgentPoolPage() {
-  return <AgentPoolTable />;
+  redirect('/admin/management');
 }
