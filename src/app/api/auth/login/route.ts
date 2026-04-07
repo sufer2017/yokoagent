@@ -20,10 +20,9 @@ export async function POST(request: Request) {
       );
     }
 
-    const supabase = createServerSupabase();
-
     // ---- Agent Login ----
     if (role === 'agent') {
+      const supabase = createServerSupabase();
       const { name } = body;
       if (!name || !name.trim()) {
         return NextResponse.json(
