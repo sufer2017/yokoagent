@@ -52,9 +52,6 @@ export async function proxy(request: NextRequest) {
   if (payload.agentId) {
     requestHeaders.set('x-agent-id', payload.agentId);
   }
-  if (payload.agentName) {
-    requestHeaders.set('x-agent-name', payload.agentName);
-  }
 
   return NextResponse.next({
     request: { headers: requestHeaders },
