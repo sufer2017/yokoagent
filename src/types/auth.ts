@@ -8,6 +8,10 @@ export interface JWTPayload {
   role: UserRole;
   agentId?: string;
   agentName?: string;
+  productId?: string;
+  productName?: string;
+  channelId?: string;
+  channelName?: string;
   exp?: number;
   iat?: number;
 }
@@ -16,13 +20,17 @@ export interface Session {
   role: UserRole;
   agentId?: string;
   agentName?: string;
+  productId?: string;
+  productName?: string;
+  channelId?: string;
+  channelName?: string;
 }
 
 export interface LoginRequest {
   role: UserRole;
-  name?: string;       // for agent login
-  username?: string;    // for admin login
-  password?: string;    // for admin login
+  username?: string;    // for agent/admin login
+  password?: string;    // for agent/admin login
+  name?: string;        // legacy agent login fallback
 }
 
 export interface LoginResponse {

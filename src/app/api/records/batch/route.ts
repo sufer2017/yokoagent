@@ -1,14 +1,30 @@
 import { NextResponse } from 'next/server';
-import { createServerSupabase } from '@/lib/supabase/server';
+import { createServerSupabase, hasSupabaseConfig } from '@/lib/supabase/server';
 import { getSession } from '@/lib/auth/session';
+import { recalculateAlertsForRecordIds } from '@/lib/alerts/engine';
+import { pruneSupabaseBusinessData } from '@/lib/admin/retention';
 import type { BatchRecordRequest } from '@/types/api';
+import {
+  computedCpa,
+  decorateRecord,
+  mutateLocalDb,
+  newId,
+  nowIso,
+  recalculateLocalAlertsForRecordIds,
+} from '@/lib/local-db/store';
 
-// POST /api/records/batch - Batch upsert records (agent only)
+function toNumberOrNull(value: unknown) {
+  if (value === '' || value == null) return null;
+  const next = Number(value);
+  return Number.isFinite(next) ? next : null;
+}
+
+// POST /api/records/batch - Batch upsert records
 export async function POST(request: Request) {
   try {
     const session = await getSession();
-    if (!session || session.role !== 'agent') {
-      return NextResponse.json({ success: false, error: 'Forbidden' }, { status: 403 });
+    if (!session) {
+      return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
     }
 
     const body: BatchRecordRequest = await request.json();
@@ -18,32 +34,143 @@ export async function POST(request: Request) {
       return NextResponse.json({ success: false, error: '没有数据需要保存' }, { status: 400 });
     }
 
+    if (!hasSupabaseConfig()) {
+      const result = await mutateLocalDb((db) => {
+        const timestamp = nowIso();
+        const savedIds: string[] = [];
+        const errors: string[] = [];
+
+        for (const record of records) {
+          if (record.id) {
+            const existing = db.daily_records.find((item) => item.id === record.id);
+            if (!existing) {
+              errors.push(`更新 ${record.id} 失败: 记录不存在`);
+              continue;
+            }
+            if (session.role === 'agent' && (existing.agent_id !== session.agentId || existing.product_id !== session.productId)) {
+              errors.push(`更新 ${record.id} 失败: Forbidden`);
+              continue;
+            }
+
+            Object.assign(existing, {
+              record_date: record.record_date,
+              creative_type: record.creative_type.trim(),
+              cost: Number(record.cost || 0),
+              activations: Number(record.activations || 0),
+              cpa: computedCpa(record.cost, record.activations),
+              ctr: toNumberOrNull(record.ctr),
+              cvr: toNumberOrNull(record.cvr),
+              cpm: toNumberOrNull(record.cpm),
+              retention_day1: toNumberOrNull(record.retention_day1),
+              retention_day7: toNumberOrNull(record.retention_day7),
+              updated_at: timestamp,
+            });
+            savedIds.push(existing.id);
+            continue;
+          }
+
+          const agentId = session.role === 'agent' ? session.agentId! : record.agent_id!;
+          const productId = session.role === 'agent' ? session.productId! : record.product_id!;
+          const channelId = session.role === 'agent' ? session.channelId! : record.channel_id!;
+          const existing = db.daily_records.find((item) => (
+            item.agent_id === agentId &&
+            item.product_id === productId &&
+            item.channel_id === channelId &&
+            item.record_date === record.record_date &&
+            item.creative_type === record.creative_type.trim()
+          ));
+
+          if (existing) {
+            Object.assign(existing, {
+              cost: Number(record.cost || 0),
+              activations: Number(record.activations || 0),
+              cpa: computedCpa(record.cost, record.activations),
+              ctr: toNumberOrNull(record.ctr),
+              cvr: toNumberOrNull(record.cvr),
+              cpm: toNumberOrNull(record.cpm),
+              retention_day1: toNumberOrNull(record.retention_day1),
+              retention_day7: toNumberOrNull(record.retention_day7),
+              updated_at: timestamp,
+            });
+            savedIds.push(existing.id);
+          } else {
+            const next = {
+              id: newId(),
+              agent_id: agentId,
+              product_id: productId,
+              channel_id: channelId,
+              record_date: record.record_date,
+              creative_type: record.creative_type.trim(),
+              cost: Number(record.cost || 0),
+              activations: Number(record.activations || 0),
+              cpa: computedCpa(record.cost, record.activations),
+              ctr: toNumberOrNull(record.ctr),
+              cvr: toNumberOrNull(record.cvr),
+              cpm: toNumberOrNull(record.cpm),
+              retention_day1: toNumberOrNull(record.retention_day1),
+              retention_day7: toNumberOrNull(record.retention_day7),
+              created_by: session.role === 'agent' ? session.agentName || null : 'admin',
+              created_at: timestamp,
+              updated_at: timestamp,
+            };
+            db.daily_records.push(next);
+            savedIds.push(next.id);
+          }
+        }
+
+        recalculateLocalAlertsForRecordIds(db, savedIds);
+        const savedRecords = savedIds
+          .map((id) => db.daily_records.find((record) => record.id === id))
+          .filter((record): record is NonNullable<typeof record> => Boolean(record))
+          .map((record) => decorateRecord(db, record));
+
+        return { savedRecords, errors };
+      });
+
+      return NextResponse.json({
+        success: result.errors.length === 0,
+        data: result.savedRecords,
+        message: result.errors.length > 0
+          ? `部分保存失败: ${result.errors.join('; ')}`
+          : `成功保存 ${result.savedRecords.length} 条记录，站内告警已重算`,
+        errors: result.errors,
+      });
+    }
+
     const supabase = createServerSupabase();
-
-    // Separate records with IDs (updates) from those without (inserts)
-    const toUpdate = records.filter((r) => r.id);
-    const toInsert = records.filter((r) => !r.id);
-
+    const toUpdate = records.filter((record) => record.id);
+    const toInsert = records.filter((record) => !record.id);
     const results = [];
     const errors = [];
 
-    // Process inserts
     if (toInsert.length > 0) {
-      const insertData = toInsert.map((r) => ({
-        agent_id: session.agentId,
-        record_date: r.record_date,
-        channel_id: r.channel_id,
-        project_id: r.project_id,
-        cost: r.cost || 0,
-        activations: r.activations || 0,
-        retention_day1: r.retention_day1,
-        retention_day7: r.retention_day7,
-      }));
+      const insertData = toInsert.map((record) => {
+        const agentId = session.role === 'agent' ? session.agentId : record.agent_id;
+        const productId = session.role === 'agent' ? session.productId : record.product_id;
+        const channelId = session.role === 'agent' ? session.channelId : record.channel_id;
+
+        return {
+          agent_id: agentId,
+          product_id: productId,
+          channel_id: channelId,
+          record_date: record.record_date,
+          creative_type: record.creative_type.trim(),
+          cost: record.cost || 0,
+          activations: record.activations || 0,
+          cpa: computedCpa(record.cost, record.activations),
+          ctr: toNumberOrNull(record.ctr),
+          cvr: toNumberOrNull(record.cvr),
+          cpm: toNumberOrNull(record.cpm),
+          retention_day1: toNumberOrNull(record.retention_day1),
+          retention_day7: toNumberOrNull(record.retention_day7),
+          created_by: session.role === 'agent' ? session.agentName : 'admin',
+        };
+      });
 
       const { data, error } = await supabase
         .from('daily_records')
         .upsert(insertData, {
-          onConflict: 'agent_id,record_date,channel_id,project_id',
+          onConflict: 'product_id,agent_id,channel_id,record_date,creative_type',
         })
         .select();
 
@@ -54,23 +181,28 @@ export async function POST(request: Request) {
       }
     }
 
-    // Process updates
     for (const record of toUpdate) {
-      const { data, error } = await supabase
+      let updateQuery = supabase
         .from('daily_records')
         .update({
           record_date: record.record_date,
-          channel_id: record.channel_id,
-          project_id: record.project_id,
+          creative_type: record.creative_type.trim(),
           cost: record.cost || 0,
           activations: record.activations || 0,
-          retention_day1: record.retention_day1,
-          retention_day7: record.retention_day7,
+          cpa: computedCpa(record.cost, record.activations),
+          ctr: toNumberOrNull(record.ctr),
+          cvr: toNumberOrNull(record.cvr),
+          cpm: toNumberOrNull(record.cpm),
+          retention_day1: toNumberOrNull(record.retention_day1),
+          retention_day7: toNumberOrNull(record.retention_day7),
         })
-        .eq('id', record.id!)
-        .eq('agent_id', session.agentId!) // Ensure ownership
-        .select()
-        .single();
+        .eq('id', record.id!);
+
+      if (session.role === 'agent') {
+        updateQuery = updateQuery.eq('agent_id', session.agentId!);
+      }
+
+      const { data, error } = await updateQuery.select().single();
 
       if (error) {
         errors.push(`更新 ${record.id} 失败: ${error.message}`);
@@ -79,12 +211,18 @@ export async function POST(request: Request) {
       }
     }
 
+    await recalculateAlertsForRecordIds(
+      supabase,
+      results.map((record: { id: string }) => record.id)
+    );
+    await pruneSupabaseBusinessData(supabase);
+
     return NextResponse.json({
       success: errors.length === 0,
       data: results,
       message: errors.length > 0
         ? `部分保存失败: ${errors.join('; ')}`
-        : `成功保存 ${results.length} 条记录`,
+        : `成功保存 ${results.length} 条记录，站内告警已重算`,
       errors,
     });
   } catch (error) {

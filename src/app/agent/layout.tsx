@@ -42,7 +42,7 @@ export default function AgentLayout({ children }: { children: React.ReactNode })
   }
 
   return (
-    <Layout style={{ minHeight: '100vh' }}>
+    <Layout style={{ minHeight: '100vh', maxWidth: '100%', overflowX: 'hidden' }}>
       <Header style={{
         background: 'rgba(255,255,255,0.92)',
         padding: '0 24px',
@@ -69,7 +69,7 @@ export default function AgentLayout({ children }: { children: React.ReactNode })
           </Button>
         </Space>
       </Header>
-      <Content style={{ padding: 24, background: 'transparent' }}>
+      <Content style={{ padding: 24, background: 'transparent', minWidth: 0, maxWidth: '100%', overflowX: 'hidden' }}>
         {children}
       </Content>
     </Layout>

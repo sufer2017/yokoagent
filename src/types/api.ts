@@ -18,6 +18,7 @@ export interface RecordFilters {
   agentId?: string;
   dateFrom?: string;
   dateTo?: string;
+  productId?: string;
   channelId?: string;
   projectId?: string;
 }
@@ -26,6 +27,7 @@ export interface StatsFilters {
   dateFrom?: string;
   dateTo?: string;
   agentIds?: string[];
+  productIds?: string[];
   channelIds?: string[];
   projectIds?: string[];
   groupBy?: 'agent' | 'channel' | 'project' | 'date';
@@ -34,11 +36,17 @@ export interface StatsFilters {
 export interface BatchRecordRequest {
   records: {
     id?: string;
+    agent_id?: string;
+    product_id?: string;
+    channel_id?: string;
     record_date: string;
-    channel_id: string;
-    project_id: string;
+    creative_type: string;
     cost: number;
     activations: number;
+    cpa?: number | null;
+    ctr: number | null;
+    cvr: number | null;
+    cpm: number | null;
     retention_day1: number | null;
     retention_day7: number | null;
   }[];

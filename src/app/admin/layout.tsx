@@ -4,11 +4,12 @@ import React, { useEffect, useState } from 'react';
 import { Layout, Typography, Button, Space, Spin, Tabs } from 'antd';
 import {
   DashboardOutlined,
+  AlertOutlined,
   ApartmentOutlined,
-  FundProjectionScreenOutlined,
-  FileTextOutlined,
+  SlidersOutlined,
   LogoutOutlined,
   CrownOutlined,
+  AreaChartOutlined,
 } from '@ant-design/icons';
 import { useRouter, usePathname } from 'next/navigation';
 import type { Session } from '@/types/auth';
@@ -17,10 +18,11 @@ const { Header, Content } = Layout;
 const { Text } = Typography;
 
 const TAB_ITEMS = [
-  { key: '/admin/strategy', icon: <FundProjectionScreenOutlined />, label: '策略台' },
-  { key: '/admin/overview', icon: <DashboardOutlined />, label: '数据总览' },
-  { key: '/admin/management', icon: <ApartmentOutlined />, label: '渠道与代理管理' },
-  { key: '/admin/reports', icon: <FileTextOutlined />, label: '日报中心' },
+  { key: '/admin/data', icon: <AreaChartOutlined />, label: '数据看板' },
+  { key: '/admin/overview', icon: <DashboardOutlined />, label: '填报看板' },
+  { key: '/admin/alerts', icon: <AlertOutlined />, label: '站内告警' },
+  { key: '/admin/targets', icon: <SlidersOutlined />, label: '考核指标' },
+  { key: '/admin/management', icon: <ApartmentOutlined />, label: '账号与渠道' },
 ];
 
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
@@ -57,8 +59,8 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   }
 
   return (
-    <Layout style={{ minHeight: '100vh' }}>
-      <Layout>
+    <Layout style={{ minHeight: '100vh', maxWidth: '100%', overflowX: 'hidden' }}>
+      <Layout style={{ minWidth: 0, maxWidth: '100%', overflowX: 'hidden' }}>
         <Header style={{
           background: '#fff',
           padding: '0 24px',
@@ -70,7 +72,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
         }}>
           <Space>
             <CrownOutlined style={{ color: '#faad14' }} />
-            <Text strong>管理员策略控制台</Text>
+            <Text strong>YokoAgent 管理后台</Text>
           </Space>
           <Space>
             <Text type="secondary">{session?.role === 'admin' ? '管理员' : ''}</Text>
@@ -83,7 +85,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
             </Button>
           </Space>
         </Header>
-        <Content style={{ padding: 24, background: '#f5f5f5' }}>
+        <Content style={{ padding: 24, background: '#f5f5f5', minWidth: 0, maxWidth: '100%', overflowX: 'hidden' }}>
           <Tabs
             activeKey={pathname}
             items={TAB_ITEMS.map((item) => ({

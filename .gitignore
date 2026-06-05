@@ -23,6 +23,7 @@
 # misc
 .DS_Store
 *.pem
+.yokoagent-local-db.json
 
 # debug
 npm-debug.log*

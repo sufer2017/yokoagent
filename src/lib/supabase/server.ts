@@ -1,5 +1,16 @@
 import { createClient } from '@supabase/supabase-js';
 
+export function hasSupabaseConfig() {
+  const configured = Boolean(process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY);
+  const shouldRequireSupabase =
+    process.env.YOKOAGENT_REQUIRE_SUPABASE === 'true' ||
+    process.env.VERCEL_ENV === 'production';
+  if (!configured && shouldRequireSupabase) {
+    throw new Error('Supabase environment variables are required for deployed multi-user YokoAgent.');
+  }
+  return configured;
+}
+
 /**
  * Create a Supabase client with service-role key.
  * ONLY use this server-side (API routes, middleware).

@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
-import { createServerSupabase } from '@/lib/supabase/server';
+import { createServerSupabase, hasSupabaseConfig } from '@/lib/supabase/server';
 import { getSession } from '@/lib/auth/session';
+import { mutateLocalDb, nowIso } from '@/lib/local-db/store';
 
 // PATCH /api/channels/[id]
 export async function PATCH(
@@ -15,11 +16,23 @@ export async function PATCH(
 
     const { id } = await params;
     const body = await request.json();
-    const supabase = createServerSupabase();
 
     const updateData: Record<string, unknown> = {};
     if (body.name !== undefined) updateData.name = body.name.trim();
     if (body.is_active !== undefined) updateData.is_active = body.is_active;
+
+    if (!hasSupabaseConfig()) {
+      const data = await mutateLocalDb((db) => {
+        const channel = db.channels.find((item) => item.id === id);
+        if (!channel) throw new Error('Channel not found');
+        Object.assign(channel, updateData, { updated_at: nowIso() });
+        return channel;
+      });
+
+      return NextResponse.json({ success: true, data });
+    }
+
+    const supabase = createServerSupabase();
 
     const { data, error } = await supabase
       .from('channels')
@@ -49,6 +62,18 @@ export async function DELETE(
     }
 
     const { id } = await params;
+    if (!hasSupabaseConfig()) {
+      await mutateLocalDb((db) => {
+        const channel = db.channels.find((item) => item.id === id);
+        if (channel) {
+          channel.is_active = false;
+          channel.updated_at = nowIso();
+        }
+      });
+
+      return NextResponse.json({ success: true });
+    }
+
     const supabase = createServerSupabase();
 
     // Soft delete: set is_active = false

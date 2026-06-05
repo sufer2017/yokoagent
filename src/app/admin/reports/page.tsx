@@ -1,8 +1,5 @@
-'use client';
-
-import React from 'react';
-import DailyReportCenter from '@/components/admin/DailyReportCenter';
+import { redirect } from 'next/navigation';
 
 export default function ReportsPage() {
-  return <DailyReportCenter />;
+  redirect('/admin/alerts');
 }

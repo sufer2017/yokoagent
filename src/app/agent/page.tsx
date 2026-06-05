@@ -1,8 +1,12 @@
 'use client';
 
-import React from 'react';
-import DailyRecordTable from '@/components/agent/DailyRecordTable';
+import React, { Suspense } from 'react';
+import AgentConsole from '@/components/agent/AgentConsole';
 
 export default function AgentPage() {
-  return <DailyRecordTable />;
+  return (
+    <Suspense fallback={null}>
+      <AgentConsole />
+    </Suspense>
+  );
 }

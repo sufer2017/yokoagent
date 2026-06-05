@@ -2,10 +2,9 @@
 
 import React, { useState } from 'react';
 import { Card, Form, Input, Button, Segmented, Typography, message, Tag } from 'antd';
-import { UserOutlined, LockOutlined, TeamOutlined, CrownOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
+import { UserOutlined, LockOutlined, TeamOutlined, CrownOutlined } from '@ant-design/icons';
 import { useRouter } from 'next/navigation';
 import type { UserRole } from '@/types/auth';
-import { mockAgents } from '@/lib/mock/seed';
 
 const { Title, Text } = Typography;
 
@@ -20,7 +19,7 @@ export default function LoginForm() {
     setLoading(true);
     try {
       const body = role === 'agent'
-        ? { role, name: values.name }
+        ? { role, username: values.username, password: values.password }
         : { role, username: values.username, password: values.password };
 
       const res = await fetch('/api/auth/login', {
@@ -35,7 +34,7 @@ export default function LoginForm() {
         messageApi.success(data.message);
         // Redirect based on role
         setTimeout(() => {
-          router.push(role === 'agent' ? '/agent' : '/admin/strategy');
+          router.push(role === 'agent' ? '/agent' : '/admin/data');
         }, 500);
       } else {
         messageApi.error(data.message);
@@ -58,29 +57,18 @@ export default function LoginForm() {
               广告投放代理管理平台
             </Title>
             <Text type="secondary">
-              一套围绕周策略制定、周中监控、预算重分配和日报输出来设计的投放策略控制台。
+              面向外部代理的 T-1 数据填报、权限隔离、考核匹配、站内告警和管理员填报看板。
             </Text>
 
-            <div className="console-stack" style={{ marginTop: 28 }}>
-              <Card variant="borderless" style={{ background: 'rgba(255,255,255,0.74)' }}>
-                <Title level={4}>你会在这里完成什么</Title>
-                <ul style={{ paddingLeft: 18, color: 'var(--text-muted)', lineHeight: 1.9 }}>
-                  <li>周一录入预算上限与四项核心约束</li>
-                  <li>设置各渠道预算占比区间并一键生成分配方案</li>
-                  <li>查看渠道-代理的赛马结果、趋势与预警</li>
-                  <li>一键生成固定格式日报并复制发送</li>
-                </ul>
-              </Card>
-              <Card variant="borderless" style={{ background: 'rgba(255,255,255,0.74)' }}>
-                <Title level={5}><SafetyCertificateOutlined /> Demo 登录提示</Title>
-                <div className="badge-row">
-                  {mockAgents.slice(0, 8).map((agent) => (
-                    <Tag key={agent.id}>{agent.name}</Tag>
-                  ))}
-                </div>
-                <Text type="secondary">管理员账号固定为 `admin` / `yzy19990704@`。</Text>
-              </Card>
-            </div>
+            <Card variant="borderless" style={{ background: 'rgba(255,255,255,0.74)', marginTop: 28 }}>
+              <Title level={4}>你会在这里完成什么</Title>
+              <ul style={{ paddingLeft: 18, color: 'var(--text-muted)', lineHeight: 1.9 }}>
+                <li>管理员维护公司级代理账号和考核指标</li>
+                <li>代理公司按 T-1 日期填报投放数据</li>
+                <li>系统按体裁自动计算日环比、周同比和考核偏离</li>
+                <li>管理员查看数据看板、填报过程、未填代理和站内告警</li>
+              </ul>
+            </Card>
           </div>
 
           <Card className="login-panel login-form-card" styles={{ body: { padding: 0 } }}>
@@ -111,17 +99,29 @@ export default function LoginForm() {
                 autoComplete="off"
               >
                 {role === 'agent' ? (
-                  <Form.Item
-                    name="name"
-                    label="姓名"
-                    rules={[{ required: true, message: '请输入您的姓名' }]}
-                  >
-                    <Input
-                      prefix={<UserOutlined />}
-                      placeholder="请输入姓名"
-                      autoFocus
-                    />
-                  </Form.Item>
+                  <>
+                    <Form.Item
+                      name="username"
+                      label="代理账号"
+                      rules={[{ required: true, message: '请输入代理账号' }]}
+                    >
+                      <Input
+                        prefix={<UserOutlined />}
+                        placeholder="例如 gdt-a"
+                        autoFocus
+                      />
+                    </Form.Item>
+                    <Form.Item
+                      name="password"
+                      label="密码"
+                      rules={[{ required: true, message: '请输入密码' }]}
+                    >
+                      <Input.Password
+                        prefix={<LockOutlined />}
+                        placeholder="请输入密码"
+                      />
+                    </Form.Item>
+                  </>
                 ) : (
                   <>
                     <Form.Item
@@ -156,7 +156,7 @@ export default function LoginForm() {
                     block
                     style={{ height: 48 }}
                   >
-                    {loading ? '登录中...' : role === 'agent' ? '进入代理填报页' : '进入管理员策略台'}
+                    {loading ? '登录中...' : role === 'agent' ? '进入代理填报页' : '进入管理员看板'}
                   </Button>
                 </Form.Item>
               </Form>

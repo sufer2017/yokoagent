@@ -21,6 +21,10 @@ export async function getSession(): Promise<Session | null> {
     role: payload.role,
     agentId: payload.agentId,
     agentName: payload.agentName,
+    productId: payload.productId,
+    productName: payload.productName,
+    channelId: payload.channelId,
+    channelName: payload.channelName,
   };
 }
 

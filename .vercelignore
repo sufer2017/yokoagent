@@ -1,0 +1,8 @@
+.env
+.env.*
+!.env.example
+.yokoagent-local-db.json
+.DS_Store
+.next
+node_modules
+tsconfig.tsbuildinfo

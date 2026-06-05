@@ -1,5 +1,5 @@
 import dayjs from 'dayjs';
-import type { Agent, Channel, Project } from '@/types/database';
+import type { Agent, Channel, Product, Project } from '@/types/database';
 import type {
   MockAppState,
   PerformanceRecord,
@@ -111,11 +111,21 @@ const AGENT_PROFILES: AgentProfile[] = [
   { id: 'agent-xhs-moruo', name: '莫若', channelId: 'channel-xhs', activationBias: 0.86, costBias: 1.11, retentionDay1Bias: -1.0, retentionDay7Bias: -0.7 },
 ];
 
+const DEMO_AGENT_PASSWORD_HASH = '$2b$10$.HYQ2.Po9sNsufYOl5mIgegyuxHtmLbxoQbF1/6NgmH2tgvQAz3tG';
+
 const PROJECT_NAMES = [
   '小说拉新',
   '工具变现',
   '短剧投流',
 ];
+
+export const mockProducts: Product[] = [{
+  id: 'product-default',
+  name: '默认产品',
+  is_active: true,
+  created_at: dayjs().subtract(90, 'day').toISOString(),
+  updated_at: dayjs().toISOString(),
+}];
 
 export const mockChannels: Channel[] = CHANNEL_PROFILES.map((profile) => ({
   id: profile.id,
@@ -127,10 +137,17 @@ export const mockChannels: Channel[] = CHANNEL_PROFILES.map((profile) => ({
 
 export const mockAgents: Agent[] = AGENT_PROFILES.map((profile) => ({
   id: profile.id,
+  product_id: mockProducts[0].id,
+  channel_id: profile.channelId,
   name: profile.name,
+  username: profile.id.replace('agent-', ''),
+  creative_types: ['短剧', '小游戏', '小说', '工具'],
+  password_hash: DEMO_AGENT_PASSWORD_HASH,
   is_active: true,
   created_at: dayjs().subtract(90, 'day').toISOString(),
   updated_at: dayjs().toISOString(),
+  product_name: mockProducts[0].name,
+  channel_name: CHANNEL_PROFILES.find((channel) => channel.id === profile.channelId)?.name,
 }));
 
 export const mockProjects: Project[] = PROJECT_NAMES.map((name, index) => ({

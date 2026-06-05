@@ -1,341 +1,492 @@
 'use client';
 
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import dynamic from 'next/dynamic';
 import {
-  Alert,
   Button,
   Card,
   Col,
   DatePicker,
+  Empty,
+  Input,
+  Progress,
   Row,
+  Space,
   Statistic,
   Table,
   Tag,
   Typography,
-  Upload,
   message,
 } from 'antd';
-import { DashboardOutlined, InboxOutlined, ReloadOutlined } from '@ant-design/icons';
+import type { TableColumnsType } from 'antd';
 import dayjs from 'dayjs';
-import type { UploadProps } from 'antd';
-import { useMockApp } from '@/lib/mock/store';
-import { buildOverviewInsights } from '@/lib/mock/insights';
+import type { Dayjs } from 'dayjs';
+import { BarChartOutlined, ReloadOutlined } from '@ant-design/icons';
+import MbiMultiSelect from '@/components/admin/MbiMultiSelect';
+import { useResizableColumns } from '@/components/common/useResizableColumns';
 
-const { Title, Text, Paragraph } = Typography;
+const Bar = dynamic(async () => (await import('@ant-design/charts')).Bar as React.ComponentType<Record<string, unknown>>, { ssr: false });
 
-export default function OverviewDashboard() {
-  const { state, latestPlan, latestStrategy, importCsvText, resetDemo } = useMockApp();
-  const [messageApi, contextHolder] = message.useMessage();
-  const availableDates = useMemo(
-    () => Array.from(new Set(state.records.map((record) => record.date))).sort((left, right) => right.localeCompare(left)),
-    [state.records]
-  );
-  const [focusDate, setFocusDate] = useState(availableDates[0]);
+const { RangePicker } = DatePicker;
+const { Title, Paragraph, Text } = Typography;
 
-  const scopedHistory = useMemo(
-    () => state.records.filter((record) => record.date <= focusDate),
-    [focusDate, state.records]
-  );
-  const currentDayRecords = useMemo(
-    () => state.records.filter((record) => record.date === focusDate),
-    [focusDate, state.records]
-  );
-  const channelInsights = useMemo(
-    () => buildOverviewInsights('channel', scopedHistory, latestStrategy, latestPlan),
-    [latestPlan, latestStrategy, scopedHistory]
-  );
-  const agentInsights = useMemo(
-    () => buildOverviewInsights('agent', scopedHistory, latestStrategy, latestPlan),
-    [latestPlan, latestStrategy, scopedHistory]
-  );
+type FillStatus = 'missing' | 'pending' | 'late' | 'on_time' | 'not_required';
 
-  const summary = useMemo(() => {
-    const cost = currentDayRecords.reduce((sum, record) => sum + record.cost, 0);
-    const activations = currentDayRecords.reduce((sum, record) => sum + record.activations, 0);
-    const retentionDay1 = currentDayRecords.length > 0
-      ? currentDayRecords.reduce((sum, record) => sum + record.retentionDay1, 0) / currentDayRecords.length
-      : 0;
-    const retentionDay7 = currentDayRecords.length > 0
-      ? currentDayRecords.reduce((sum, record) => sum + record.retentionDay7, 0) / currentDayRecords.length
-      : 0;
+interface FillDetailRow {
+  id: string;
+  date: string;
+  agent_id: string;
+  agent_name: string;
+  product_id: string;
+  product_name: string;
+  channel_id: string;
+  channel_name: string;
+  creative_type: string;
+  expected: boolean;
+  filled: boolean;
+  status: FillStatus;
+  is_late: boolean;
+  deadline_at: string;
+  deadline_label: string;
+  first_filled_at: string | null;
+  last_modified_at: string | null;
+  record_count: number;
+  filled_by: string[];
+}
 
-    return {
-      cost,
-      activations,
-      activationCost: activations > 0 ? cost / activations : 0,
-      retentionDay1,
-      retentionDay7,
-      warningCount: [...channelInsights, ...agentInsights].filter((item) => item.warningCount > 0).length,
-    };
-  }, [agentInsights, channelInsights, currentDayRecords]);
+interface LateRankPoint {
+  agent_id: string;
+  agent_name: string;
+  channel_id: string;
+  channel_name: string;
+  creative_type: string;
+  agent_label: string;
+  type: '逾期未填' | '逾期已填';
+  value: number;
+  total_late_count: number;
+}
 
-  const uploaderProps: UploadProps = {
-    maxCount: 1,
-    showUploadList: false,
-    beforeUpload: async (file) => {
-      const text = await file.text();
-      const result = importCsvText(text);
-      if (result.success) {
-        messageApi.success(result.message);
-      } else {
-        messageApi.error(result.message);
-        result.errors?.forEach((error) => messageApi.warning(error));
-      }
-      return false;
+interface FillStatusData {
+  dateFrom: string;
+  dateTo: string;
+  summaryCards: {
+    expectedAgentDays: number;
+    filledAgentDays: number;
+    onTimeFilled: number;
+    lateFilled: number;
+    overdueMissing: number;
+    completionRate: number;
+  };
+  lateRankSeries: LateRankPoint[];
+  detailRows: FillDetailRow[];
+  filterOptions: {
+    products: Array<{ id: string; name: string }>;
+    channels: Array<{ id: string; name: string }>;
+    agents: Array<{ id: string; name: string; product_id: string; product_name: string; channel_id: string; channel_name: string }>;
+    creativeTypes?: string[];
+    filledBy: string[];
+    statuses: Array<{ value: FillStatus; label: string }>;
+  };
+}
+
+interface OverviewDashboardProps {
+  scope?: 'admin' | 'agent';
+  fixedProductId?: string;
+  fixedChannelId?: string;
+  fixedAgentId?: string;
+  fixedProductName?: string;
+  fixedChannelName?: string;
+  fixedAgentName?: string;
+}
+
+const STATUS_META: Record<FillStatus, { color: string; label: string; order: number }> = {
+  missing: { color: 'red', label: '逾期未填', order: 0 },
+  pending: { color: 'blue', label: '待填', order: 1 },
+  late: { color: 'orange', label: '逾期已填', order: 2 },
+  on_time: { color: 'green', label: '准时已填', order: 3 },
+  not_required: { color: 'default', label: '无需填报', order: 4 },
+};
+
+function normalizeRange(range: [Dayjs, Dayjs]) {
+  const [start, end] = range[0].isAfter(range[1]) ? [range[1], range[0]] : range;
+  const days = end.diff(start, 'day') + 1;
+  return days > 21 ? [end.subtract(20, 'day'), end] as [Dayjs, Dayjs] : [start, end] as [Dayjs, Dayjs];
+}
+
+function timeText(value: string | null) {
+  return value ? dayjs(value).format('YYYY-MM-DD HH:mm') : '-';
+}
+
+function statusTag(status: FillStatus) {
+  const meta = STATUS_META[status];
+  return <Tag color={meta.color}>{meta.label}</Tag>;
+}
+
+function compareText(left?: string | null, right?: string | null) {
+  return String(left || '').localeCompare(String(right || ''), 'zh-Hans-CN');
+}
+
+function compareIso(left?: string | null, right?: string | null) {
+  if (!left && !right) return 0;
+  if (!left) return -1;
+  if (!right) return 1;
+  return left.localeCompare(right);
+}
+
+function chartConfig(data: LateRankPoint[]) {
+  return {
+    data,
+    xField: 'value',
+    yField: 'agent_label',
+    colorField: 'type',
+    stack: true,
+    height: 330,
+    legend: { position: 'bottom' },
+    axis: {
+      x: { title: '逾期次数', min: 0, labelAutoHide: true },
+      y: { title: false, labelAutoHide: false },
+    },
+    interaction: { tooltip: { marker: false } },
+    scale: {
+      color: {
+        range: ['#f04438', '#f59e0b'],
+      },
     },
   };
+}
 
-  const channelColumns = [
+export default function OverviewDashboard({
+  scope = 'admin',
+  fixedProductId,
+  fixedChannelId,
+  fixedAgentId,
+  fixedProductName,
+  fixedChannelName,
+  fixedAgentName,
+}: OverviewDashboardProps = {}) {
+  const isAgentScope = scope === 'agent';
+  const defaultDateTo = dayjs().subtract(1, 'day');
+  const [dateRange, setDateRange] = useState<[Dayjs, Dayjs]>([defaultDateTo.subtract(6, 'day'), defaultDateTo]);
+  const [productIds, setProductIds] = useState<string[]>(isAgentScope && fixedProductId ? [fixedProductId] : []);
+  const [channelIds, setChannelIds] = useState<string[]>(isAgentScope && fixedChannelId ? [fixedChannelId] : []);
+  const [agentIds, setAgentIds] = useState<string[]>(isAgentScope && fixedAgentId ? [fixedAgentId] : []);
+  const [statuses, setStatuses] = useState<FillStatus[]>([]);
+  const [filledBy, setFilledBy] = useState('');
+  const [data, setData] = useState<FillStatusData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [messageApi, contextHolder] = message.useMessage();
+  const effectiveProductIds = useMemo(
+    () => (isAgentScope && fixedProductId ? [fixedProductId] : productIds),
+    [fixedProductId, isAgentScope, productIds]
+  );
+  const effectiveChannelIds = useMemo(
+    () => (isAgentScope && fixedChannelId ? [fixedChannelId] : channelIds),
+    [channelIds, fixedChannelId, isAgentScope]
+  );
+  const effectiveAgentIds = useMemo(
+    () => (isAgentScope && fixedAgentId ? [fixedAgentId] : agentIds),
+    [agentIds, fixedAgentId, isAgentScope]
+  );
+
+  useEffect(() => {
+    if (!isAgentScope) return;
+    setProductIds(fixedProductId ? [fixedProductId] : []);
+    setChannelIds(fixedChannelId ? [fixedChannelId] : []);
+    setAgentIds(fixedAgentId ? [fixedAgentId] : []);
+  }, [fixedAgentId, fixedChannelId, fixedProductId, isAgentScope]);
+
+  const fetchStatus = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [dateFrom, dateTo] = normalizeRange(dateRange);
+      const params = new URLSearchParams({
+        dateFrom: dateFrom.format('YYYY-MM-DD'),
+        dateTo: dateTo.format('YYYY-MM-DD'),
+      });
+      if (effectiveProductIds.length > 0) params.set('productIds', effectiveProductIds.join(','));
+      if (effectiveChannelIds.length > 0) params.set('channelIds', effectiveChannelIds.join(','));
+      if (effectiveAgentIds.length > 0) params.set('agentIds', effectiveAgentIds.join(','));
+      if (statuses.length > 0) params.set('statuses', statuses.join(','));
+      if (filledBy.trim()) params.set('filledBy', filledBy.trim());
+
+      const response = await fetch(`/api/fill-status?${params.toString()}`);
+      const payload = await response.json();
+      if (!payload.success) {
+        throw new Error(payload.error || '加载失败');
+      }
+      setData(payload.data);
+    } catch (error) {
+      messageApi.error(error instanceof Error ? error.message : '加载填报看板失败');
+    } finally {
+      setLoading(false);
+    }
+  }, [dateRange, effectiveAgentIds, effectiveChannelIds, effectiveProductIds, filledBy, messageApi, statuses]);
+
+  useEffect(() => {
+    fetchStatus();
+  }, [fetchStatus]);
+
+  const filteredAgents = useMemo(() => {
+    const agents = data?.filterOptions.agents || [];
+    return agents
+      .filter((agent) => productIds.length === 0 || productIds.includes(agent.product_id))
+      .filter((agent) => channelIds.length === 0 || channelIds.includes(agent.channel_id));
+  }, [channelIds, data?.filterOptions.agents, productIds]);
+
+  useEffect(() => {
+    if (isAgentScope || agentIds.length === 0) return;
+    const availableAgentIds = new Set(filteredAgents.map((agent) => agent.id));
+    const nextAgentIds = agentIds.filter((agentId) => availableAgentIds.has(agentId));
+    if (nextAgentIds.length !== agentIds.length) {
+      setAgentIds(nextAgentIds);
+    }
+  }, [agentIds, filteredAgents, isAgentScope]);
+
+  const columns: TableColumnsType<FillDetailRow> = [
     {
-      title: '排名',
-      dataIndex: 'rank',
-      key: 'rank',
-      width: 72,
-      render: (value: number) => <Tag color={value <= 2 ? 'gold' : 'default'}>#{value}</Tag>,
-    },
-    {
-      title: '渠道',
-      dataIndex: 'scopeLabel',
-      key: 'scopeLabel',
-      width: 120,
+      title: '日期',
+      dataIndex: 'date',
+      key: 'date',
+      width: 122,
+      fixed: 'left',
+      sorter: { compare: (left, right) => compareText(left.date, right.date), multiple: 5 },
+      defaultSortOrder: 'descend',
       render: (value: string) => <Text strong>{value}</Text>,
     },
     {
-      title: '总结',
-      dataIndex: 'summary',
-      key: 'summary',
-      width: 420,
-      render: (value: string) => <Paragraph style={{ marginBottom: 0 }}>{value}</Paragraph>,
+      title: '产品',
+      dataIndex: 'product_name',
+      key: 'product_name',
+      width: 130,
+      sorter: { compare: (left, right) => compareText(left.product_name, right.product_name), multiple: 4 },
+      render: (value: string) => <Tag color="blue">{value}</Tag>,
     },
     {
-      title: '成本',
-      dataIndex: ['metrics', 'activationCost'],
-      key: 'activationCost',
-      width: 110,
-      render: (value: number) => `¥${value.toFixed(2)}`,
+      title: '渠道',
+      dataIndex: 'channel_name',
+      key: 'channel_name',
+      width: 120,
+      sorter: { compare: (left, right) => compareText(left.channel_name, right.channel_name), multiple: 3 },
+      render: (value: string) => <Tag>{value}</Tag>,
     },
     {
-      title: '激活量',
-      dataIndex: ['metrics', 'activations'],
-      key: 'activations',
-      width: 90,
-    },
-    {
-      title: '较近7日',
-      dataIndex: 'vsTrailing7dActivationCost',
-      key: 'vsTrailing7dActivationCost',
-      width: 110,
-      render: (value: number) => (
-        <Text type={value > 0 ? 'danger' : 'success'}>
-          {value > 0 ? '+' : ''}
-          {value.toFixed(0)}%
-        </Text>
-      ),
-    },
-    {
-      title: '较上周',
-      dataIndex: 'vsPreviousWeekActivationCost',
-      key: 'vsPreviousWeekActivationCost',
-      width: 110,
-      render: (value: number) => (
-        <Text type={value > 0 ? 'danger' : 'success'}>
-          {value > 0 ? '+' : ''}
-          {value.toFixed(0)}%
-        </Text>
-      ),
-    },
-    {
-      title: '预警',
-      dataIndex: 'warningCount',
-      key: 'warningCount',
-      width: 90,
-      render: (value: number) => <Tag color={value > 0 ? 'red' : 'green'}>{value}</Tag>,
-    },
-  ];
-
-  const agentColumns = [
-    {
-      title: '排名',
-      dataIndex: 'rank',
-      key: 'rank',
-      width: 72,
-      render: (value: number) => <Tag color={value <= 3 ? 'cyan' : 'default'}>#{value}</Tag>,
+      title: '体裁',
+      dataIndex: 'creative_type',
+      key: 'creative_type',
+      width: 120,
+      sorter: { compare: (left, right) => compareText(left.creative_type, right.creative_type), multiple: 3 },
+      render: (value: string) => <Tag color="purple">{value || '-'}</Tag>,
     },
     {
       title: '代理',
-      dataIndex: 'scopeLabel',
-      key: 'scopeLabel',
-      width: 120,
+      dataIndex: 'agent_name',
+      key: 'agent_name',
+      width: 170,
+      sorter: { compare: (left, right) => compareText(left.agent_name, right.agent_name), multiple: 2 },
       render: (value: string) => <Text strong>{value}</Text>,
     },
     {
-      title: '渠道',
-      dataIndex: 'parentLabel',
-      key: 'parentLabel',
-      width: 110,
+      title: '填报状态',
+      dataIndex: 'status',
+      key: 'status',
+      width: 126,
+      sorter: { compare: (left, right) => STATUS_META[left.status].order - STATUS_META[right.status].order, multiple: 4 },
+      defaultSortOrder: 'ascend',
+      render: statusTag,
     },
     {
-      title: '总结',
-      dataIndex: 'summary',
-      key: 'summary',
-      width: 420,
-      render: (value: string) => <Paragraph style={{ marginBottom: 0 }}>{value}</Paragraph>,
+      title: '截止时间',
+      dataIndex: 'deadline_label',
+      key: 'deadline_label',
+      width: 160,
+      sorter: (left, right) => compareIso(left.deadline_at, right.deadline_at),
+      render: (value: string) => <Text type="secondary">{value}</Text>,
     },
     {
-      title: '次留率',
-      dataIndex: ['metrics', 'retentionDay1'],
-      key: 'retentionDay1',
-      width: 100,
-      render: (value: number) => `${value.toFixed(1)}%`,
-    },
-    {
-      title: '较同渠道',
-      dataIndex: 'vsPeersRetentionDay1',
-      key: 'vsPeersRetentionDay1',
-      width: 110,
-      render: (value: number) => (
-        <Text type={value >= 0 ? 'success' : 'danger'}>
-          {value > 0 ? '+' : ''}
-          {value.toFixed(1)}pt
-        </Text>
+      title: '首条填报时间',
+      dataIndex: 'first_filled_at',
+      key: 'first_filled_at',
+      width: 168,
+      sorter: (left, right) => compareIso(left.first_filled_at, right.first_filled_at),
+      render: (value: string | null, row) => (
+        <Text type={row.status === 'late' ? 'danger' : undefined}>{timeText(value)}</Text>
       ),
     },
     {
-      title: '预警',
-      dataIndex: 'warningCount',
-      key: 'warningCount',
-      width: 90,
-      render: (value: number) => <Tag color={value > 0 ? 'red' : 'green'}>{value}</Tag>,
+      title: '最后修改时间',
+      dataIndex: 'last_modified_at',
+      key: 'last_modified_at',
+      width: 168,
+      sorter: (left, right) => compareIso(left.last_modified_at, right.last_modified_at),
+      render: timeText,
+    },
+    {
+      title: '填报行数',
+      dataIndex: 'record_count',
+      key: 'record_count',
+      width: 112,
+      align: 'right',
+      sorter: (left, right) => left.record_count - right.record_count,
+      render: (value: number) => <Tag color={value > 0 ? 'blue' : 'default'}>{value}</Tag>,
+    },
+    {
+      title: '填写人',
+      dataIndex: 'filled_by',
+      key: 'filled_by',
+      width: 220,
+      sorter: (left, right) => compareText(left.filled_by.join('、'), right.filled_by.join('、')),
+      render: (value: string[]) => value.length > 0 ? value.join('、') : '-',
     },
   ];
+  const resizableColumns = useResizableColumns(
+    isAgentScope ? 'agent-fill-dashboard-columns' : 'admin-fill-dashboard-columns',
+    columns
+  );
+
+  const summaryCards = data?.summaryCards;
 
   return (
     <>
       {contextHolder}
       <div className="console-stack">
-        <Card className="hero-card">
+        <Card className="mbi-dashboard-shell">
           <div className="hero-row">
             <div>
-              <Tag color="blue">数据总览</Tag>
-              <Title level={2} style={{ marginTop: 12, marginBottom: 8 }}>
-                <DashboardOutlined /> 全局赛马与预警视图
+              <Tag color="blue">填报看板</Tag>
+              <Title level={2} style={{ marginTop: 10, marginBottom: 6 }}>
+                <BarChartOutlined /> {isAgentScope ? '填报逾期情况' : 'MBI 填报过程仪表盘'}
               </Title>
               <Paragraph className="hero-text">
-                围绕当前周策略，把渠道层与代理层的横向赛马、纵向趋势、预警密度和总结文案放在同一块屏幕里。
+                {isAgentScope
+                  ? '当前页面只展示本公司 T-1 填报状态、截止时间和逾期情况。'
+                  : '统一筛选填报状态、截止时间和填写人，聚焦代理是否按时完成 T-1 数据提交。'}
               </Paragraph>
             </div>
-            <div className="hero-actions">
-              <DatePicker
-                value={focusDate ? dayjs(focusDate) : undefined}
-                onChange={(value) => {
-                  if (value) setFocusDate(value.format('YYYY-MM-DD'));
-                }}
-                allowClear={false}
-              />
-              <Upload {...uploaderProps}>
-                <Button icon={<InboxOutlined />}>导入历史 CSV</Button>
-              </Upload>
-              <Button icon={<ReloadOutlined />} onClick={resetDemo}>
-                重置 Demo
-              </Button>
-            </div>
+            <Button icon={<ReloadOutlined />} onClick={fetchStatus}>刷新</Button>
           </div>
         </Card>
 
-        <Row gutter={[16, 16]}>
-          <Col xs={24} md={12} xl={6}>
-            <Card className="metric-card">
-              <Statistic title="当日总消耗" value={summary.cost} precision={2} prefix="¥" />
-            </Card>
-          </Col>
-          <Col xs={24} md={12} xl={6}>
-            <Card className="metric-card">
-              <Statistic title="当日总激活" value={summary.activations} />
-            </Card>
-          </Col>
-          <Col xs={24} md={12} xl={6}>
-            <Card className="metric-card">
-              <Statistic title="激活成本" value={summary.activationCost} precision={2} prefix="¥" />
-            </Card>
-          </Col>
-          <Col xs={24} md={12} xl={6}>
-            <Card className="metric-card">
-              <Statistic title="预警对象数" value={summary.warningCount} valueStyle={summary.warningCount > 0 ? { color: '#d4380d' } : undefined} />
-            </Card>
-          </Col>
-        </Row>
-
-        <Alert
-          type={latestPlan?.forecastSummary.requiresReallocation ? 'warning' : 'success'}
-          showIcon
-          message={latestPlan?.forecastSummary.summary || '当前暂无预算分配方案'}
-          description={`本周预算上限 ¥${latestStrategy.budgetUpperBound.toLocaleString()}，次留下限 ${latestStrategy.minRetentionDay1}% ，7留下限 ${latestStrategy.minRetentionDay7}% 。`}
-        />
-
-        <Row gutter={[16, 16]}>
-          <Col xs={24} xl={12}>
-            <Card className="section-card" title="渠道层赛马">
-              <Table
-                rowKey="id"
-                dataSource={channelInsights}
-                columns={channelColumns}
-                pagination={false}
-                scroll={{ x: 1100 }}
+        <Card className="section-card" title="全局筛选器">
+          <div className="mbi-filter-group">
+            <Space wrap>
+              <RangePicker
+                value={dateRange}
+                allowClear={false}
+                onChange={(value) => {
+                  if (value?.[0] && value?.[1]) {
+                    setDateRange(normalizeRange([value[0], value[1]]));
+                  }
+                }}
               />
+              {isAgentScope ? (
+                <>
+                  <Tag color="purple">产品：{fixedProductName || data?.filterOptions.products[0]?.name || '-'}</Tag>
+                  <Tag color="blue">渠道：{fixedChannelName || data?.filterOptions.channels[0]?.name || '-'}</Tag>
+                  <Tag color="geekblue">代理商：{fixedAgentName || data?.filterOptions.agents[0]?.name || '-'}</Tag>
+                </>
+              ) : (
+                <>
+                  <MbiMultiSelect
+                    placeholder="产品"
+                    value={productIds}
+                    style={{ minWidth: 190 }}
+                    onChange={(value) => setProductIds(value)}
+                    options={(data?.filterOptions.products || []).map((product) => ({ value: product.id, label: product.name }))}
+                  />
+                  <MbiMultiSelect
+                    placeholder="渠道"
+                    value={channelIds}
+                    style={{ minWidth: 190 }}
+                    onChange={(value) => setChannelIds(value)}
+                    options={(data?.filterOptions.channels || []).map((channel) => ({ value: channel.id, label: channel.name }))}
+                  />
+                  <MbiMultiSelect
+                    placeholder="代理商"
+                    value={agentIds}
+                    style={{ minWidth: 260 }}
+                    onChange={(value) => setAgentIds(value)}
+                    options={filteredAgents.map((agent) => ({ value: agent.id, label: `${agent.product_name} / ${agent.channel_name} / ${agent.name}` }))}
+                  />
+                </>
+              )}
+              <MbiMultiSelect
+                placeholder="填报状态"
+                value={statuses}
+                style={{ minWidth: 250 }}
+                onChange={(value) => setStatuses(value.filter((status): status is FillStatus => status in STATUS_META))}
+                options={(data?.filterOptions.statuses || []).map((status) => ({ value: status.value, label: status.label }))}
+              />
+              <Input
+                allowClear
+                placeholder="填写人"
+                value={filledBy}
+                style={{ width: 220 }}
+                onChange={(event) => setFilledBy(event.target.value)}
+              />
+            </Space>
+            <Text type="secondary">日期范围最多返回 21 天；产品、渠道、代理、状态、填写人会同时作用于卡片、直方图和明细表。</Text>
+          </div>
+        </Card>
+
+        <Row gutter={[12, 12]}>
+          <Col xs={24} sm={12} xl={4}>
+            <Card className="mbi-kpi-card" loading={loading}>
+              <Statistic title="应填体裁天数" value={summaryCards?.expectedAgentDays || 0} />
+              <Text type="secondary">在投体裁 × 日期</Text>
             </Card>
           </Col>
-          <Col xs={24} xl={12}>
-            <Card className="section-card" title="代理层赛马">
-              <Table
-                rowKey="id"
-                dataSource={agentInsights}
-                columns={agentColumns}
-                pagination={false}
-                scroll={{ x: 1100 }}
-              />
+          <Col xs={24} sm={12} xl={4}>
+            <Card className="mbi-kpi-card" loading={loading}>
+              <Statistic title="已填体裁天数" value={summaryCards?.filledAgentDays || 0} />
+              <Text type="secondary">至少 1 行提交记录</Text>
+            </Card>
+          </Col>
+          <Col xs={24} sm={12} xl={4}>
+            <Card className="mbi-kpi-card" loading={loading}>
+              <Statistic title="准时已填" value={summaryCards?.onTimeFilled || 0} />
+              <Text type="secondary">不晚于 D+1 12:00</Text>
+            </Card>
+          </Col>
+          <Col xs={24} sm={12} xl={4}>
+            <Card className="mbi-kpi-card" loading={loading}>
+              <Statistic title="逾期已填" value={summaryCards?.lateFilled || 0} />
+              <Text type="secondary">已填但超过截止</Text>
+            </Card>
+          </Col>
+          <Col xs={24} sm={12} xl={4}>
+            <Card className="mbi-kpi-card" loading={loading}>
+              <Statistic title="逾期未填" value={summaryCards?.overdueMissing || 0} />
+              <Text type="secondary">已过截止且无记录</Text>
+            </Card>
+          </Col>
+          <Col xs={24} sm={12} xl={4}>
+            <Card className="mbi-kpi-card" loading={loading}>
+              <Statistic title="填报完成率" value={summaryCards?.completionRate || 0} suffix="%" />
+              <Progress percent={summaryCards?.completionRate || 0} showInfo={false} size="small" />
+              <Text type="secondary">{summaryCards?.filledAgentDays || 0}/{summaryCards?.expectedAgentDays || 0}</Text>
             </Card>
           </Col>
         </Row>
 
-        <Row gutter={[16, 16]}>
-          <Col xs={24} lg={12}>
-            <Card className="section-card" title="今日最佳渠道与代理">
-              <div className="insight-grid">
-                <div className="insight-tile">
-                  <Text type="secondary">最佳渠道</Text>
-                  <Title level={4}>{channelInsights[0]?.scopeLabel || '-'}</Title>
-                  <Paragraph>{channelInsights[0]?.summary}</Paragraph>
-                </div>
-                <div className="insight-tile">
-                  <Text type="secondary">最佳代理</Text>
-                  <Title level={4}>{agentInsights[0]?.scopeLabel || '-'}</Title>
-                  <Paragraph>{agentInsights[0]?.summary}</Paragraph>
-                </div>
-              </div>
-            </Card>
-          </Col>
-          <Col xs={24} lg={12}>
-            <Card className="section-card" title="重点预警">
-              <div className="insight-list">
-                {[...channelInsights, ...agentInsights]
-                  .filter((item) => item.warningCount > 0)
-                  .slice(0, 5)
-                  .map((item) => (
-                    <div key={item.id} className="warning-item">
-                      <div>
-                        <Text strong>{item.scopeLabel}</Text>
-                        <Paragraph style={{ marginBottom: 0 }}>{item.summary}</Paragraph>
-                      </div>
-                      <Tag color="red">{item.warningCount} 项</Tag>
-                    </div>
-                  ))}
-                {[...channelInsights, ...agentInsights].filter((item) => item.warningCount > 0).length === 0 && (
-                  <Text type="secondary">当前所选日期之前暂无高风险对象，建议继续保持当前策略执行。</Text>
-                )}
-              </div>
-            </Card>
-          </Col>
-        </Row>
+        <Card className="section-card" title="逾期排行榜">
+          {data && data.lateRankSeries.length > 0 ? (
+            <Bar {...chartConfig(data.lateRankSeries)} />
+          ) : (
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前筛选下暂无逾期代理" />
+          )}
+        </Card>
+
+        <Card className="section-card" title="填报明细表">
+          <Table
+            rowKey="id"
+            loading={loading}
+            dataSource={data?.detailRows || []}
+            columns={resizableColumns}
+            pagination={{ pageSize: 12, showSizeChanger: true }}
+            locale={{ emptyText: '当前筛选下暂无应填体裁。' }}
+            scroll={{ x: 1670 }}
+          />
+        </Card>
       </div>
     </>
   );
