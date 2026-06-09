@@ -42,6 +42,7 @@ interface FillDetailRow {
   channel_id: string;
   channel_name: string;
   creative_type: string;
+  promotion_goal: string;
   expected: boolean;
   filled: boolean;
   status: FillStatus;
@@ -60,6 +61,7 @@ interface LateRankPoint {
   channel_id: string;
   channel_name: string;
   creative_type: string;
+  promotion_goal: string;
   agent_label: string;
   type: '逾期未填' | '逾期已填';
   value: number;
@@ -84,6 +86,7 @@ interface FillStatusData {
     channels: Array<{ id: string; name: string }>;
     agents: Array<{ id: string; name: string; product_id: string; product_name: string; channel_id: string; channel_name: string }>;
     creativeTypes?: string[];
+    promotionGoals?: string[];
     filledBy: string[];
     statuses: Array<{ value: FillStatus; label: string }>;
   };
@@ -171,6 +174,7 @@ export default function OverviewDashboard({
   const [channelIds, setChannelIds] = useState<string[]>(isAgentScope && fixedChannelId ? [fixedChannelId] : []);
   const [agentIds, setAgentIds] = useState<string[]>(isAgentScope && fixedAgentId ? [fixedAgentId] : []);
   const [statuses, setStatuses] = useState<FillStatus[]>([]);
+  const [promotionGoals, setPromotionGoals] = useState<string[]>([]);
   const [filledBy, setFilledBy] = useState('');
   const [data, setData] = useState<FillStatusData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -206,6 +210,7 @@ export default function OverviewDashboard({
       if (effectiveProductIds.length > 0) params.set('productIds', effectiveProductIds.join(','));
       if (effectiveChannelIds.length > 0) params.set('channelIds', effectiveChannelIds.join(','));
       if (effectiveAgentIds.length > 0) params.set('agentIds', effectiveAgentIds.join(','));
+      if (promotionGoals.length > 0) params.set('promotionGoals', promotionGoals.join(','));
       if (statuses.length > 0) params.set('statuses', statuses.join(','));
       if (filledBy.trim()) params.set('filledBy', filledBy.trim());
 
@@ -220,7 +225,7 @@ export default function OverviewDashboard({
     } finally {
       setLoading(false);
     }
-  }, [dateRange, effectiveAgentIds, effectiveChannelIds, effectiveProductIds, filledBy, messageApi, statuses]);
+  }, [dateRange, effectiveAgentIds, effectiveChannelIds, effectiveProductIds, filledBy, messageApi, promotionGoals, statuses]);
 
   useEffect(() => {
     fetchStatus();
@@ -276,6 +281,14 @@ export default function OverviewDashboard({
       width: 120,
       sorter: { compare: (left, right) => compareText(left.creative_type, right.creative_type), multiple: 3 },
       render: (value: string) => <Tag color="purple">{value || '-'}</Tag>,
+    },
+    {
+      title: '投放目标',
+      dataIndex: 'promotion_goal',
+      key: 'promotion_goal',
+      width: 120,
+      sorter: { compare: (left, right) => compareText(left.promotion_goal, right.promotion_goal), multiple: 3 },
+      render: (value: string) => <Tag color="geekblue">{value || '-'}</Tag>,
     },
     {
       title: '代理',
@@ -416,6 +429,13 @@ export default function OverviewDashboard({
                 onChange={(value) => setStatuses(value.filter((status): status is FillStatus => status in STATUS_META))}
                 options={(data?.filterOptions.statuses || []).map((status) => ({ value: status.value, label: status.label }))}
               />
+              <MbiMultiSelect
+                placeholder="投放目标"
+                value={promotionGoals}
+                style={{ minWidth: 190 }}
+                onChange={(value) => setPromotionGoals(value)}
+                options={(data?.filterOptions.promotionGoals || []).map((goal) => ({ value: goal, label: goal }))}
+              />
               <Input
                 allowClear
                 placeholder="填写人"
@@ -484,7 +504,7 @@ export default function OverviewDashboard({
             columns={resizableColumns}
             pagination={{ pageSize: 12, showSizeChanger: true }}
             locale={{ emptyText: '当前筛选下暂无应填体裁。' }}
-            scroll={{ x: 1670 }}
+            scroll={{ x: 1790 }}
           />
         </Card>
       </div>

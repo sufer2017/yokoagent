@@ -4,10 +4,13 @@ import { getSession } from '@/lib/auth/session';
 import { verifyRecordOwnership } from '@/lib/helpers/agentQuery';
 import { recalculateAlertsForRecordIds } from '@/lib/alerts/engine';
 import { pruneSupabaseBusinessData } from '@/lib/admin/retention';
+import { DEFAULT_PROMOTION_GOAL, normalizeDictionaryName } from '@/lib/admin/creativeTypes';
+import { isSupabaseScopeAuthorized } from '@/lib/admin/scopes';
 import {
   cascadeDeleteRecords,
   computedCpa,
   decorateRecord,
+  isLocalScopeAuthorized,
   mutateLocalDb,
   nowIso,
   recalculateLocalAlertsForRecordIds,
@@ -16,6 +19,8 @@ import {
 type CostActivationSnapshot = {
   cost: number | string | null;
   activations: number | string | null;
+  creative_type?: string | null;
+  promotion_goal?: string | null;
 };
 
 function toNumberOrNull(value: unknown) {
@@ -45,8 +50,18 @@ export async function PATCH(
         if (session.role === 'agent' && (record.agent_id !== session.agentId || record.product_id !== session.productId)) {
           throw new Error('Forbidden');
         }
+        const nextCreativeType = body.creative_type !== undefined
+          ? normalizeDictionaryName(body.creative_type)
+          : record.creative_type;
+        const nextPromotionGoal = body.promotion_goal !== undefined
+          ? normalizeDictionaryName(body.promotion_goal) || DEFAULT_PROMOTION_GOAL
+          : record.promotion_goal;
+        if (session.role === 'agent' && !isLocalScopeAuthorized(db, session.agentId!, nextCreativeType, nextPromotionGoal)) {
+          throw new Error('该体裁/投放目标未授权，请联系管理员配置');
+        }
         if (body.record_date !== undefined) record.record_date = body.record_date;
-        if (body.creative_type !== undefined) record.creative_type = String(body.creative_type).trim();
+        if (body.creative_type !== undefined) record.creative_type = nextCreativeType;
+        if (body.promotion_goal !== undefined) record.promotion_goal = nextPromotionGoal;
         if (body.cost !== undefined) record.cost = Number(body.cost || 0);
         if (body.activations !== undefined) record.activations = Number(body.activations || 0);
         record.cpa = computedCpa(record.cost, record.activations);
@@ -75,17 +90,30 @@ export async function PATCH(
 
     const updateData: Record<string, unknown> = {};
     let currentRecord: CostActivationSnapshot | null = null;
-    if (body.cost !== undefined || body.activations !== undefined) {
+    if (body.cost !== undefined || body.activations !== undefined || body.creative_type !== undefined || body.promotion_goal !== undefined || session.role === 'agent') {
       const { data: current, error: currentError } = await supabase
         .from('daily_records')
-        .select('cost, activations')
+        .select('cost, activations, creative_type, promotion_goal')
         .eq('id', id)
         .maybeSingle();
       if (currentError) throw currentError;
       currentRecord = current as CostActivationSnapshot | null;
     }
+    const nextCreativeType = body.creative_type !== undefined
+      ? normalizeDictionaryName(body.creative_type)
+      : normalizeDictionaryName(currentRecord?.creative_type);
+    const nextPromotionGoal = body.promotion_goal !== undefined
+      ? normalizeDictionaryName(body.promotion_goal) || DEFAULT_PROMOTION_GOAL
+      : normalizeDictionaryName(currentRecord?.promotion_goal) || DEFAULT_PROMOTION_GOAL;
+    if (session.role === 'agent') {
+      const authorized = await isSupabaseScopeAuthorized(supabase, session.agentId!, nextCreativeType, nextPromotionGoal);
+      if (!authorized) {
+        return NextResponse.json({ success: false, error: '该体裁/投放目标未授权，请联系管理员配置' }, { status: 403 });
+      }
+    }
     if (body.record_date !== undefined) updateData.record_date = body.record_date;
-    if (body.creative_type !== undefined) updateData.creative_type = String(body.creative_type).trim();
+    if (body.creative_type !== undefined) updateData.creative_type = nextCreativeType;
+    if (body.promotion_goal !== undefined) updateData.promotion_goal = nextPromotionGoal;
     if (body.cost !== undefined) updateData.cost = body.cost;
     if (body.activations !== undefined) updateData.activations = body.activations;
     if (body.cost !== undefined || body.activations !== undefined) {

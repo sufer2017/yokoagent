@@ -24,6 +24,7 @@ import { DeleteOutlined, DownloadOutlined, PlusOutlined, ReloadOutlined, UploadO
 import type { UploadProps } from 'antd';
 import type { Agent, Channel, Product, TargetChange } from '@/types/database';
 import { useResizableColumns } from '@/components/common/useResizableColumns';
+import { DEFAULT_PROMOTION_GOAL, normalizeAuthorizedScopes } from '@/lib/admin/creativeTypes';
 
 const { Title, Paragraph, Text } = Typography;
 
@@ -69,6 +70,7 @@ export default function TargetManager() {
   const selectedProductId = Form.useWatch('product_id', form) as string | undefined;
   const selectedChannelId = Form.useWatch('channel_id', form) as string | undefined;
   const selectedAgentId = Form.useWatch('agent_id', form) as string | undefined;
+  const selectedCreativeType = Form.useWatch('creative_type', form) as string | undefined;
   const selectedAgent = agents.find((agent) => agent.id === selectedAgentId);
 
   useEffect(() => {
@@ -90,10 +92,12 @@ export default function TargetManager() {
   const syncAgentScope = (agentId?: string) => {
     const agent = agents.find((item) => item.id === agentId);
     if (!agent) return;
-    form.setFieldsValue({
-      product_id: agent.product_id,
-      channel_id: agent.channel_id,
-    });
+      form.setFieldsValue({
+        product_id: agent.product_id,
+        channel_id: agent.channel_id,
+        creative_type: undefined,
+        promotion_goal: undefined,
+      });
   };
 
   const createTarget = async () => {
@@ -181,6 +185,12 @@ export default function TargetManager() {
     value: channel.id,
     label: channel.name,
   }));
+  const selectedAgentScopes = normalizeAuthorizedScopes(selectedAgent?.authorized_scopes, selectedAgent?.creative_types);
+  const creativeTypeOptions = Array.from(new Set(selectedAgentScopes.filter((scope) => scope.is_active).map((scope) => scope.creative_type)))
+    .map((value) => ({ value, label: value }));
+  const promotionGoalOptions = selectedAgentScopes
+    .filter((scope) => scope.is_active && (!selectedCreativeType || scope.creative_type === selectedCreativeType))
+    .map((scope) => ({ value: scope.promotion_goal, label: scope.promotion_goal }));
 
   const columns = [
     {
@@ -214,6 +224,13 @@ export default function TargetManager() {
       dataIndex: 'creative_type',
       key: 'creative_type',
       width: 110,
+    },
+    {
+      title: '投放目标',
+      dataIndex: 'promotion_goal',
+      key: 'promotion_goal',
+      width: 110,
+      render: (value: string) => value || DEFAULT_PROMOTION_GOAL,
     },
     {
       title: '是否在投',
@@ -344,8 +361,22 @@ export default function TargetManager() {
               onChange={syncAgentScope}
             />
           </Form.Item>
-          <Form.Item name="creative_type" label="体裁" rules={[{ required: true, message: '请输入体裁' }]}>
-            <Input placeholder="短剧/小说/工具/小游戏" />
+          <Form.Item name="creative_type" label="体裁" rules={[{ required: true, message: '请选择体裁' }]}>
+            <Select
+              showSearch
+              optionFilterProp="label"
+              options={creativeTypeOptions}
+              disabled={!selectedAgent}
+              onChange={() => form.setFieldValue('promotion_goal', undefined)}
+            />
+          </Form.Item>
+          <Form.Item name="promotion_goal" label="投放目标" rules={[{ required: true, message: '请选择投放目标' }]}>
+            <Select
+              showSearch
+              optionFilterProp="label"
+              options={promotionGoalOptions}
+              disabled={!selectedAgent || !selectedCreativeType}
+            />
           </Form.Item>
           <Form.Item name="is_running" label="是否在投" valuePropName="checked">
             <Switch checkedChildren="是" unCheckedChildren="否" />

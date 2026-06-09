@@ -12,6 +12,7 @@ interface TargetRow {
   product_id: string;
   channel_id: string;
   creative_type: string;
+  promotion_goal: string;
   effective_date: string;
   target_cpa: number | string | null;
   target_retention_day1: number | string | null;
@@ -19,13 +20,14 @@ interface TargetRow {
   activation_cap?: number | string | null;
 }
 
-function latestTarget(targets: TargetRow[], productId: string, agentId: string, channelId: string, creativeType: string, recordDate: string) {
+function latestTarget(targets: TargetRow[], productId: string, agentId: string, channelId: string, creativeType: string, promotionGoal: string, recordDate: string) {
   return targets
     .filter((target) => (
       target.product_id === productId &&
       target.agent_id === agentId &&
       target.channel_id === channelId &&
       target.creative_type === creativeType &&
+      target.promotion_goal === promotionGoal &&
       target.effective_date <= recordDate
     ))
     .sort((left, right) => right.effective_date.localeCompare(left.effective_date))[0] || null;
@@ -75,6 +77,7 @@ export async function GET(request: NextRequest) {
     const channelId = session.role === 'agent' ? session.channelId : searchParams.get('channelId');
     const status = searchParams.get('status');
     const hasAlert = searchParams.get('hasAlert');
+    const promotionGoal = searchParams.get('promotionGoal');
     const pagination = parsePagination(searchParams);
 
     if (!hasSupabaseConfig()) {
@@ -85,6 +88,7 @@ export async function GET(request: NextRequest) {
         .filter((alert) => !agentId || alert.agent_id === agentId)
         .filter((alert) => !productId || alert.product_id === productId)
         .filter((alert) => !channelId || alert.channel_id === channelId)
+        .filter((alert) => !promotionGoal || alert.promotion_goal === promotionGoal)
         .filter((alert) => matchesStatusFilter(alert.status, status))
         .filter((alert) => hasAlert !== 'true' || alert.has_alert)
         .sort((left, right) => (
@@ -116,6 +120,7 @@ export async function GET(request: NextRequest) {
     if (agentId) query = query.eq('agent_id', agentId);
     if (productId) query = query.eq('product_id', productId);
     if (channelId) query = query.eq('channel_id', channelId);
+    if (promotionGoal) query = query.eq('promotion_goal', promotionGoal);
     if (status === 'processed') query = query.in('status', ['acknowledged', 'resolved']);
     if (status && status !== 'all' && status !== 'processed') query = query.eq('status', status);
     if (hasAlert === 'true') query = query.eq('has_alert', true);
@@ -128,12 +133,13 @@ export async function GET(request: NextRequest) {
     ), '1900-01-01');
     let targetsQuery = supabase
       .from('target_changes')
-      .select('agent_id, product_id, channel_id, creative_type, effective_date, target_cpa, target_retention_day1, target_retention_day7, activation_cap')
+      .select('agent_id, product_id, channel_id, creative_type, promotion_goal, effective_date, target_cpa, target_retention_day1, target_retention_day7, activation_cap')
       .lte('effective_date', latestDate)
       .order('effective_date', { ascending: false });
     if (agentId) targetsQuery = targetsQuery.eq('agent_id', agentId);
     if (productId) targetsQuery = targetsQuery.eq('product_id', productId);
     if (channelId) targetsQuery = targetsQuery.eq('channel_id', channelId);
+    if (promotionGoal) targetsQuery = targetsQuery.eq('promotion_goal', promotionGoal);
     const { data: targets, error: targetsError } = await targetsQuery;
 
     if (targetsError) throw targetsError;
@@ -141,7 +147,7 @@ export async function GET(request: NextRequest) {
 
     const rows = (data || []).map((row: Record<string, unknown>) => {
       const agent = row.agents as { name?: string; feishu_webhook?: string | null } | null;
-      const target = latestTarget(targetRows, String(row.product_id), String(row.agent_id), String(row.channel_id), String(row.creative_type), String(row.record_date));
+      const target = latestTarget(targetRows, String(row.product_id), String(row.agent_id), String(row.channel_id), String(row.creative_type), String(row.promotion_goal || ''), String(row.record_date));
       return {
         ...row,
         agent_name: agent?.name,

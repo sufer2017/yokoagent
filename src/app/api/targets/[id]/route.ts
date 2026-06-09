@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createServerSupabase, hasSupabaseConfig } from '@/lib/supabase/server';
 import { getSession } from '@/lib/auth/session';
+import { normalizeDictionaryName } from '@/lib/admin/creativeTypes';
 import { decorateTarget, mutateLocalDb, nowIso } from '@/lib/local-db/store';
 
 function toNumberOrNull(value: unknown) {
@@ -25,7 +26,8 @@ export async function PATCH(
     if (body.product_id !== undefined) updateData.product_id = body.product_id;
     if (body.agent_id !== undefined) updateData.agent_id = body.agent_id;
     if (body.channel_id !== undefined) updateData.channel_id = body.channel_id;
-    if (body.creative_type !== undefined) updateData.creative_type = String(body.creative_type).trim();
+    if (body.creative_type !== undefined) updateData.creative_type = normalizeDictionaryName(body.creative_type);
+    if (body.promotion_goal !== undefined) updateData.promotion_goal = normalizeDictionaryName(body.promotion_goal);
     if (body.effective_date !== undefined) updateData.effective_date = body.effective_date;
     if (body.is_running !== undefined) updateData.is_running = body.is_running;
     if (body.target_cpa !== undefined) updateData.target_cpa = toNumberOrNull(body.target_cpa);

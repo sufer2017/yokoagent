@@ -4,7 +4,7 @@ import { getSession } from '@/lib/auth/session';
 import { hashPassword } from '@/lib/auth/password';
 import { missingHeaders, parseBoolean, parseCsv } from '@/lib/admin/csv';
 import { decorateAgent, mutateLocalDb, newId, nowIso } from '@/lib/local-db/store';
-import { normalizeCreativeTypes } from '@/lib/admin/creativeTypes';
+import { DEFAULT_PROMOTION_GOAL, normalizeCreativeTypes, normalizeDictionaryName } from '@/lib/admin/creativeTypes';
 
 const HEADER_ALIASES: Record<string, string> = {
   产品: 'product_name',
@@ -17,6 +17,8 @@ const HEADER_ALIASES: Record<string, string> = {
   投放体裁: 'creative_types',
   creative_type: 'creative_types',
   creative_types: 'creative_types',
+  投放目标: 'promotion_goal',
+  promotion_goal: 'promotion_goal',
   登录账号: 'username',
   密码: 'password',
   初始密码: 'password',
@@ -27,7 +29,7 @@ const HEADER_ALIASES: Record<string, string> = {
   飞书标识: 'feishu_webhook',
 };
 
-const REQUIRED_HEADERS = ['product_name', 'channel_name', 'channel_status', 'agent_name', 'creative_types', 'username', 'password', 'agent_status'];
+const REQUIRED_HEADERS = ['product_name', 'channel_name', 'channel_status', 'agent_name', 'creative_types', 'promotion_goal', 'username', 'password', 'agent_status'];
 
 async function readCsvText(request: Request) {
   const body = await request.json();
@@ -68,6 +70,7 @@ export async function POST(request: Request) {
           const agentName = row.agent_name?.trim();
           const username = row.username?.trim();
           const creativeTypes = normalizeCreativeTypes(row.creative_types);
+          const promotionGoal = normalizeDictionaryName(row.promotion_goal) || DEFAULT_PROMOTION_GOAL;
           const channelActive = parseBoolean(row.channel_status, true);
           const agentActive = parseBoolean(row.agent_status, true);
           const password = row.password?.trim();
@@ -79,6 +82,10 @@ export async function POST(request: Request) {
           }
           if (creativeTypes.length === 0) {
             errors.push(`第 ${line} 行缺少 体裁`);
+            continue;
+          }
+          if (!promotionGoal) {
+            errors.push(`第 ${line} 行缺少 投放目标`);
             continue;
           }
           if (channelActive == null) {
@@ -141,7 +148,7 @@ export async function POST(request: Request) {
               product_id: product.id,
               name: agentName,
               username,
-              creative_types: creativeTypes,
+              creative_types: normalizeCreativeTypes([...(existing.creative_types || []), ...creativeTypes]),
               feishu_webhook: feishuWebhook,
               is_active: agentActive,
               updated_at: timestamp,
@@ -162,6 +169,20 @@ export async function POST(request: Request) {
               created_at: timestamp,
               updated_at: timestamp,
             });
+          }
+          const agent = existing || db.agents.find((item) => item.username === username)!;
+          for (const creativeType of creativeTypes) {
+            if (!db.agent_authorized_scopes.some((scope) => scope.agent_id === agent.id && scope.creative_type === creativeType && scope.promotion_goal === promotionGoal)) {
+              db.agent_authorized_scopes.push({
+                id: newId(),
+                agent_id: agent.id,
+                creative_type: creativeType,
+                promotion_goal: promotionGoal,
+                is_active: true,
+                created_at: timestamp,
+                updated_at: timestamp,
+              });
+            }
           }
           importedAgents += 1;
         }
@@ -194,6 +215,7 @@ export async function POST(request: Request) {
         const agentName = row.agent_name?.trim();
         const username = row.username?.trim();
         const creativeTypes = normalizeCreativeTypes(row.creative_types);
+        const promotionGoal = normalizeDictionaryName(row.promotion_goal) || DEFAULT_PROMOTION_GOAL;
         const channelActive = parseBoolean(row.channel_status, true);
         const agentActive = parseBoolean(row.agent_status, true);
         const password = row.password?.trim();
@@ -205,6 +227,10 @@ export async function POST(request: Request) {
         }
         if (creativeTypes.length === 0) {
           errors.push(`第 ${line} 行缺少 体裁`);
+          continue;
+        }
+        if (!promotionGoal) {
+          errors.push(`第 ${line} 行缺少 投放目标`);
           continue;
         }
         if (channelActive == null) {
@@ -280,12 +306,17 @@ export async function POST(request: Request) {
         }
 
         if (existingId) {
+          const { data: existingAgent } = await supabase
+            .from('agents')
+            .select('creative_types')
+            .eq('id', existingId)
+            .maybeSingle();
           const updatePayload: Record<string, unknown> = {
             channel_id: channelId,
             product_id: productId,
             name: agentName,
             username,
-            creative_types: creativeTypes,
+            creative_types: normalizeCreativeTypes([...(normalizeCreativeTypes(existingAgent?.creative_types)), ...creativeTypes]),
             feishu_webhook: feishuWebhook,
             is_active: agentActive,
           };
@@ -307,6 +338,23 @@ export async function POST(request: Request) {
             password_plaintext: password!,
             is_active: agentActive,
           });
+          if (error) throw error;
+        }
+        const effectiveAgentId = existingId || (await supabase
+          .from('agents')
+          .select('id')
+          .eq('username', username)
+          .single()).data?.id;
+        if (effectiveAgentId) {
+          const scopeRows = creativeTypes.map((creativeType) => ({
+            agent_id: effectiveAgentId,
+            creative_type: creativeType,
+            promotion_goal: promotionGoal,
+            is_active: true,
+          }));
+          await supabase.from('creative_types').upsert(creativeTypes.map((name) => ({ name, is_active: true })), { onConflict: 'name' });
+          await supabase.from('promotion_goals').upsert({ name: promotionGoal, is_active: true }, { onConflict: 'name' });
+          const { error } = await supabase.from('agent_authorized_scopes').upsert(scopeRows, { onConflict: 'agent_id,creative_type,promotion_goal' });
           if (error) throw error;
         }
         importedAgents += 1;

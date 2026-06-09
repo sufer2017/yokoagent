@@ -8,6 +8,7 @@ interface DailyRecordRow {
   channel_id: string;
   record_date: string;
   creative_type: string;
+  promotion_goal: string;
   cost: number | string | null;
   activations: number | string | null;
   cpa: number | string | null;
@@ -80,7 +81,7 @@ function formatSignedPercent(value: number | null): string {
 async function fetchRecord(supabase: SupabaseClient, id: string) {
   const { data, error } = await supabase
     .from('daily_records')
-    .select('id, agent_id, product_id, channel_id, record_date, creative_type, cost, activations, cpa, ctr, cvr, cpm, retention_day1, retention_day7')
+    .select('id, agent_id, product_id, channel_id, record_date, creative_type, promotion_goal, cost, activations, cpa, ctr, cvr, cpm, retention_day1, retention_day7')
     .eq('id', id)
     .single();
 
@@ -95,11 +96,12 @@ async function fetchBaseline(supabase: SupabaseClient, record: DailyRecordRow, d
   const targetDate = dayjs(record.record_date).subtract(days, 'day').format('YYYY-MM-DD');
   const { data } = await supabase
     .from('daily_records')
-    .select('id, agent_id, product_id, channel_id, record_date, creative_type, cost, activations, cpa, ctr, cvr, cpm, retention_day1, retention_day7')
+    .select('id, agent_id, product_id, channel_id, record_date, creative_type, promotion_goal, cost, activations, cpa, ctr, cvr, cpm, retention_day1, retention_day7')
     .eq('agent_id', record.agent_id)
     .eq('product_id', record.product_id)
     .eq('channel_id', record.channel_id)
     .eq('creative_type', record.creative_type)
+    .eq('promotion_goal', record.promotion_goal)
     .eq('record_date', targetDate)
     .maybeSingle();
 
@@ -114,6 +116,7 @@ async function fetchLatestTarget(supabase: SupabaseClient, record: DailyRecordRo
     .eq('product_id', record.product_id)
     .eq('channel_id', record.channel_id)
     .eq('creative_type', record.creative_type)
+    .eq('promotion_goal', record.promotion_goal)
     .lte('effective_date', record.record_date)
     .order('effective_date', { ascending: false })
     .limit(1)
@@ -202,6 +205,7 @@ export async function recalculateAlertsForRecordIds(
       product_id: record.product_id,
       channel_id: record.channel_id,
       creative_type: record.creative_type,
+      promotion_goal: record.promotion_goal,
       cost_dod: deltas.cost_dod,
       activations_dod: deltas.activations_dod,
       cpa_dod: deltas.cpa_dod,

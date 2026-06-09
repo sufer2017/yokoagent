@@ -17,27 +17,18 @@ export async function pruneSupabaseBusinessData(
     .lt('record_date', cutoff);
   if (oldAlertError) throw oldAlertError;
 
-  const { error: deleteAlertsError } = await supabase
-    .from('alert_results')
-    .delete()
-    .lt('record_date', cutoff);
-  if (deleteAlertsError) throw deleteAlertsError;
-
   const { data: oldRecords, error: oldRecordError } = await supabase
     .from('daily_records')
     .select('id')
     .lt('record_date', cutoff);
   if (oldRecordError) throw oldRecordError;
 
-  const { error: deleteRecordsError } = await supabase
-    .from('daily_records')
-    .delete()
-    .lt('record_date', cutoff);
-  if (deleteRecordsError) throw deleteRecordsError;
-
   return {
     cutoff,
-    deleted_daily_records: oldRecords?.length || 0,
-    deleted_alert_results: oldAlerts?.length || 0,
+    deleted_daily_records: 0,
+    deleted_alert_results: 0,
+    retained_daily_records_before_cutoff: oldRecords?.length || 0,
+    retained_alert_results_before_cutoff: oldAlerts?.length || 0,
+    mode: 'read_only_retention_check',
   };
 }

@@ -65,7 +65,7 @@ export default function LoginForm() {
               <ul style={{ paddingLeft: 18, color: 'var(--text-muted)', lineHeight: 1.9 }}>
                 <li>管理员维护公司级代理账号和考核指标</li>
                 <li>代理公司按 T-1 日期填报投放数据</li>
-                <li>系统按体裁自动计算日环比、周同比和考核偏离</li>
+                <li>系统按体裁与投放目标自动计算日环比、周同比和考核偏离</li>
                 <li>管理员查看数据看板、填报过程、未填代理和站内告警</li>
               </ul>
             </Card>

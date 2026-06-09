@@ -35,6 +35,7 @@ interface TargetRow extends TargetLike {
   product_id: string;
   channel_id: string;
   creative_type: string;
+  promotion_goal: string;
   effective_date: string;
 }
 
@@ -60,6 +61,7 @@ interface SourceRecord {
   channel_id: string;
   record_date: string;
   creative_type: string;
+  promotion_goal: string;
   cost: number | string | null;
   activations: number | string | null;
   cpa: number | string | null;
@@ -80,6 +82,7 @@ interface DetailRow {
   channel_name: string;
   agent_name: string;
   creative_type: string;
+  promotion_goal: string;
   cost: number;
   cost_dod: number | null;
   activations: number;
@@ -166,13 +169,14 @@ function relationName(value: unknown) {
   return relation?.name || '';
 }
 
-function latestTarget(targets: TargetRow[], productId: string, agentId: string, channelId: string, creativeType: string, recordDate: string) {
+function latestTarget(targets: TargetRow[], productId: string, agentId: string, channelId: string, creativeType: string, promotionGoal: string, recordDate: string) {
   return targets
     .filter((target) => (
       target.product_id === productId &&
       target.agent_id === agentId &&
       target.channel_id === channelId &&
       target.creative_type === creativeType &&
+      target.promotion_goal === promotionGoal &&
       target.effective_date <= recordDate
     ))
     .sort((left, right) => right.effective_date.localeCompare(left.effective_date))[0] || null;
@@ -228,6 +232,7 @@ function buildDetailRow(
     channel_name: names.channelName,
     agent_name: names.agentName,
     creative_type: record.creative_type,
+    promotion_goal: record.promotion_goal,
     cost: round2(toNumberOrNull(record.cost)) || 0,
     cost_dod: round4(toNumberOrNull(alert?.cost_dod)),
     activations: toNumberOrNull(record.activations) || 0,
@@ -316,6 +321,7 @@ function sortDetailRows(rows: DetailRow[]) {
     left.product_name.localeCompare(right.product_name, 'zh-Hans-CN') ||
     left.channel_name.localeCompare(right.channel_name, 'zh-Hans-CN') ||
     left.creative_type.localeCompare(right.creative_type, 'zh-Hans-CN') ||
+    left.promotion_goal.localeCompare(right.promotion_goal, 'zh-Hans-CN') ||
     left.agent_name.localeCompare(right.agent_name, 'zh-Hans-CN') ||
     left.id.localeCompare(right.id)
   ));
@@ -345,6 +351,7 @@ function buildDetailSummary(rows: DetailRow[]): DetailRow | null {
     channel_name: '',
     agent_name: '',
     creative_type: '',
+    promotion_goal: '',
     cost: totalCost,
     cost_dod: average(rows.map((row) => row.cost_dod)),
     activations: totalActivations,
@@ -400,8 +407,8 @@ async function fetchSupabaseChunks<T>(buildQuery: () => SupabaseRangeQuery<T>) {
   return rows;
 }
 
-function isExpectedAgentDay(targets: Array<Pick<TargetRow, 'agent_id' | 'product_id' | 'channel_id' | 'creative_type' | 'effective_date' | 'is_running'>>, productId: string, agentId: string, channelId: string, date: string) {
-  const latestByCreative = new Map<string, Pick<TargetRow, 'effective_date' | 'is_running'>>();
+function isExpectedAgentDay(targets: Array<Pick<TargetRow, 'agent_id' | 'product_id' | 'channel_id' | 'creative_type' | 'promotion_goal' | 'effective_date' | 'is_running'>>, productId: string, agentId: string, channelId: string, date: string) {
+  const latestByScope = new Map<string, Pick<TargetRow, 'effective_date' | 'is_running'>>();
   for (const target of targets) {
     if (
       target.product_id !== productId ||
@@ -411,13 +418,13 @@ function isExpectedAgentDay(targets: Array<Pick<TargetRow, 'agent_id' | 'product
     ) {
       continue;
     }
-    const creativeKey = target.creative_type || '__default__';
-    const existing = latestByCreative.get(creativeKey);
+    const scopeKey = `${target.creative_type || '__default__'}:${target.promotion_goal || '__default__'}`;
+    const existing = latestByScope.get(scopeKey);
     if (!existing || target.effective_date > existing.effective_date) {
-      latestByCreative.set(creativeKey, target);
+      latestByScope.set(scopeKey, target);
     }
   }
-  return Array.from(latestByCreative.values()).some((target) => target.is_running);
+  return Array.from(latestByScope.values()).some((target) => target.is_running);
 }
 
 function localRunningAgents(db: LocalDb, focusDate: string, productIds: string[], channelIds: string[], agentIds: string[]) {
@@ -439,6 +446,7 @@ function buildResponse(
     channels: Array<{ id: string; name: string }>;
     agents: Array<{ id: string; name: string; product_id: string; product_name: string; channel_id: string; channel_name: string }>;
     creativeTypes: string[];
+    promotionGoals: string[];
     runningAgentCount: number;
     detailRowsOverride?: DetailRow[];
   }
@@ -488,6 +496,7 @@ function buildResponse(
       channels: options.channels,
       agents: options.agents,
       creativeTypes: options.creativeTypes,
+      promotionGoals: options.promotionGoals,
     },
   };
 }
@@ -513,6 +522,7 @@ export async function GET(request: NextRequest) {
     let channelIds = parseList(searchParams, 'channelIds', 'channelId');
     let agentIds = parseList(searchParams, 'agentIds', 'agentId');
     const creativeTypes = parseList(searchParams, 'creativeTypes', 'creativeType');
+    const promotionGoals = parseList(searchParams, 'promotionGoals', 'promotionGoal');
     const metricFilters = parseMetricFilters(searchParams.get('metricFilters'));
 
     if (session.role === 'agent') {
@@ -527,6 +537,7 @@ export async function GET(request: NextRequest) {
       const scopedRecordsForOptions = db.daily_records
         .filter((record) => session.role !== 'agent' || (record.agent_id === session.agentId && record.product_id === session.productId && record.channel_id === session.channelId));
       const allCreativeTypes = Array.from(new Set(scopedRecordsForOptions.map((record) => record.creative_type))).sort((left, right) => left.localeCompare(right, 'zh-Hans-CN'));
+      const allPromotionGoals = Array.from(new Set(scopedRecordsForOptions.map((record) => record.promotion_goal))).sort((left, right) => left.localeCompare(right, 'zh-Hans-CN'));
       const optionProducts = db.products
         .filter((product) => session.role !== 'agent' || product.id === session.productId);
       const optionChannels = db.channels
@@ -539,6 +550,7 @@ export async function GET(request: NextRequest) {
         .filter((record) => channelIds.length === 0 || channelIds.includes(record.channel_id))
         .filter((record) => agentIds.length === 0 || agentIds.includes(record.agent_id))
         .filter((record) => creativeTypes.length === 0 || creativeTypes.includes(record.creative_type))
+        .filter((record) => promotionGoals.length === 0 || promotionGoals.includes(record.promotion_goal))
         .map((record: LocalDailyRecord) => {
           const agent = db.agents.find((item) => item.id === record.agent_id);
           const channel = db.channels.find((item) => item.id === record.channel_id);
@@ -549,7 +561,7 @@ export async function GET(request: NextRequest) {
               productName: db.products.find((product) => product.id === record.product_id)?.name || '',
               channelName: channel?.name || '',
             },
-            latestTargetForRecord(db, record.agent_id, record.channel_id, record.record_date, record.product_id, record.creative_type),
+            latestTargetForRecord(db, record.agent_id, record.channel_id, record.record_date, record.product_id, record.creative_type, record.promotion_goal),
             alertByRecordId.get(record.id) || null
           );
         });
@@ -572,6 +584,7 @@ export async function GET(request: NextRequest) {
             channel_name: db.channels.find((channel) => channel.id === agent.channel_id)?.name || '',
           })),
           creativeTypes: allCreativeTypes,
+          promotionGoals: allPromotionGoals,
         }),
       });
     }
@@ -581,7 +594,7 @@ export async function GET(request: NextRequest) {
     const buildRecordsQuery = () => {
       let query = supabase
         .from('daily_records')
-        .select('id, agent_id, product_id, channel_id, record_date, creative_type, cost, activations, cpa, ctr, cvr, cpm, retention_day1, retention_day7, agents(name), products(name), channels(name)')
+        .select('id, agent_id, product_id, channel_id, record_date, creative_type, promotion_goal, cost, activations, cpa, ctr, cvr, cpm, retention_day1, retention_day7, agents(name), products(name), channels(name)')
         .gte('record_date', dateFrom)
         .lte('record_date', dateTo)
         .order('record_date', { ascending: false })
@@ -591,6 +604,7 @@ export async function GET(request: NextRequest) {
       if (channelIds.length > 0) query = query.in('channel_id', channelIds);
       if (agentIds.length > 0) query = query.in('agent_id', agentIds);
       if (creativeTypes.length > 0) query = query.in('creative_type', creativeTypes);
+      if (promotionGoals.length > 0) query = query.in('promotion_goal', promotionGoals);
       return query;
     };
 
@@ -607,17 +621,20 @@ export async function GET(request: NextRequest) {
       if (channelIds.length > 0) query = query.in('channel_id', channelIds);
       if (agentIds.length > 0) query = query.in('agent_id', agentIds);
       if (creativeTypes.length > 0) query = query.in('creative_type', creativeTypes);
+      if (promotionGoals.length > 0) query = query.in('promotion_goal', promotionGoals);
       return query;
     };
 
     let targetsQuery = supabase
         .from('target_changes')
-        .select('agent_id, product_id, channel_id, creative_type, effective_date, is_running, target_cpa, target_retention_day1, target_retention_day7, activation_cap')
+        .select('agent_id, product_id, channel_id, creative_type, promotion_goal, effective_date, is_running, target_cpa, target_retention_day1, target_retention_day7, activation_cap')
         .lte('effective_date', dateTo)
         .order('effective_date', { ascending: false });
     if (productIds.length > 0) targetsQuery = targetsQuery.in('product_id', productIds);
     if (channelIds.length > 0) targetsQuery = targetsQuery.in('channel_id', channelIds);
     if (agentIds.length > 0) targetsQuery = targetsQuery.in('agent_id', agentIds);
+    if (creativeTypes.length > 0) targetsQuery = targetsQuery.in('creative_type', creativeTypes);
+    if (promotionGoals.length > 0) targetsQuery = targetsQuery.in('promotion_goal', promotionGoals);
 
     let agentsQuery = supabase
         .from('agents')
@@ -661,6 +678,7 @@ export async function GET(request: NextRequest) {
         channel_id: String(row.channel_id),
         record_date: String(row.record_date),
         creative_type: String(row.creative_type || ''),
+        promotion_goal: String(row.promotion_goal || ''),
         cost: row.cost as string | number | null,
         activations: row.activations as string | number | null,
         cpa: row.cpa as string | number | null,
@@ -677,7 +695,7 @@ export async function GET(request: NextRequest) {
           productName: relationName(row.products),
           channelName: relationName(row.channels),
         },
-        latestTarget(targets, source.product_id, source.agent_id, source.channel_id, source.creative_type, source.record_date),
+        latestTarget(targets, source.product_id, source.agent_id, source.channel_id, source.creative_type, source.promotion_goal, source.record_date),
         alertByRecordId.get(source.id) || null
       );
     });
@@ -723,6 +741,7 @@ export async function GET(request: NextRequest) {
           channel_name: agent.channel_name,
         })),
         creativeTypes: Array.from(new Set(rows.map((row) => row.creative_type))).sort((left, right) => left.localeCompare(right, 'zh-Hans-CN')),
+        promotionGoals: Array.from(new Set(rows.map((row) => row.promotion_goal))).sort((left, right) => left.localeCompare(right, 'zh-Hans-CN')),
       }),
     });
   } catch (error) {

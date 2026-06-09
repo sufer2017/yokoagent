@@ -32,7 +32,37 @@ CREATE TABLE channels (
 CREATE INDEX idx_channels_active ON channels(is_active) WHERE is_active = true;
 
 -- ============================================================
--- 3. agents: company-level accounts
+-- 3. dictionaries and agent authorized scopes
+-- ============================================================
+CREATE TABLE creative_types (
+    id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    name        TEXT NOT NULL UNIQUE,
+    is_active   BOOLEAN NOT NULL DEFAULT true,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE promotion_goals (
+    id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    name        TEXT NOT NULL UNIQUE,
+    is_active   BOOLEAN NOT NULL DEFAULT true,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+INSERT INTO creative_types(name) VALUES
+    ('单本'), ('短剧'), ('动态漫'), ('仿真人'), ('有声'), ('红包'), ('影游')
+ON CONFLICT (name) DO UPDATE SET is_active = true, updated_at = now();
+
+INSERT INTO promotion_goals(name) VALUES
+    ('拉新'), ('卸载'), ('拉活')
+ON CONFLICT (name) DO UPDATE SET is_active = true, updated_at = now();
+
+CREATE INDEX idx_creative_types_active ON creative_types(is_active) WHERE is_active = true;
+CREATE INDEX idx_promotion_goals_active ON promotion_goals(is_active) WHERE is_active = true;
+
+-- ============================================================
+-- 4. agents: company-level accounts
 -- ============================================================
 CREATE TABLE agents (
     id             UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -62,8 +92,22 @@ ALTER TABLE agents ADD COLUMN IF NOT EXISTS password_plaintext TEXT NOT NULL DEF
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS creative_types TEXT[] NOT NULL DEFAULT '{}';
 CREATE INDEX IF NOT EXISTS idx_agents_creative_types ON agents USING GIN (creative_types);
 
+CREATE TABLE agent_authorized_scopes (
+    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    agent_id        UUID NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    creative_type   TEXT NOT NULL,
+    promotion_goal  TEXT NOT NULL,
+    is_active       BOOLEAN NOT NULL DEFAULT true,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT agent_authorized_scopes_agent_creative_goal_key UNIQUE (agent_id, creative_type, promotion_goal)
+);
+
+CREATE INDEX idx_agent_authorized_scopes_agent ON agent_authorized_scopes(agent_id);
+CREATE INDEX idx_agent_authorized_scopes_active ON agent_authorized_scopes(agent_id, is_active) WHERE is_active = true;
+
 -- ============================================================
--- 4. daily_records: T-1 reporting detail
+-- 5. daily_records: T-1 reporting detail
 -- Percent fields store percentage points, e.g. 12.3 means 12.3%.
 -- ============================================================
 CREATE TABLE daily_records (
@@ -73,6 +117,7 @@ CREATE TABLE daily_records (
     channel_id        UUID NOT NULL REFERENCES channels(id) ON DELETE RESTRICT,
     record_date       DATE NOT NULL,
     creative_type     TEXT NOT NULL,
+    promotion_goal    TEXT NOT NULL DEFAULT '拉新',
     cost              NUMERIC(14, 2) NOT NULL DEFAULT 0 CHECK (cost >= 0),
     activations       INTEGER NOT NULL DEFAULT 0 CHECK (activations >= 0),
     cpa               NUMERIC(12, 2) CHECK (cpa >= 0),
@@ -84,7 +129,7 @@ CREATE TABLE daily_records (
     created_by        TEXT,
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (product_id, agent_id, channel_id, record_date, creative_type)
+    CONSTRAINT daily_records_scope_goal_key UNIQUE (product_id, agent_id, channel_id, record_date, creative_type, promotion_goal)
 );
 
 CREATE INDEX idx_daily_records_agent ON daily_records(agent_id);
@@ -93,11 +138,12 @@ CREATE INDEX idx_daily_records_channel ON daily_records(channel_id);
 CREATE INDEX idx_daily_records_date ON daily_records(record_date);
 CREATE INDEX idx_daily_records_agent_date ON daily_records(agent_id, record_date);
 CREATE INDEX idx_daily_records_date_scope ON daily_records(record_date, product_id, channel_id, agent_id);
-CREATE INDEX idx_daily_records_lookup ON daily_records(product_id, agent_id, channel_id, creative_type, record_date);
+CREATE INDEX idx_daily_records_lookup ON daily_records(product_id, agent_id, channel_id, creative_type, promotion_goal, record_date);
 ALTER TABLE daily_records ADD COLUMN IF NOT EXISTS product_id UUID REFERENCES products(id) ON DELETE RESTRICT;
+ALTER TABLE daily_records ADD COLUMN IF NOT EXISTS promotion_goal TEXT NOT NULL DEFAULT '拉新';
 
 -- ============================================================
--- 5. target_changes: assessment targets history
+-- 6. target_changes: assessment targets history
 -- ============================================================
 CREATE TABLE target_changes (
     id                     UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -105,6 +151,7 @@ CREATE TABLE target_changes (
     product_id             UUID NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
     channel_id             UUID NOT NULL REFERENCES channels(id) ON DELETE RESTRICT,
     creative_type          TEXT NOT NULL,
+    promotion_goal         TEXT NOT NULL DEFAULT '拉新',
     is_running             BOOLEAN NOT NULL DEFAULT true,
     effective_date         DATE NOT NULL,
     target_cpa             NUMERIC(12, 2) CHECK (target_cpa >= 0),
@@ -114,13 +161,14 @@ CREATE TABLE target_changes (
     note                   TEXT,
     created_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (product_id, agent_id, channel_id, creative_type, effective_date)
+    CONSTRAINT target_changes_scope_goal_date_key UNIQUE (product_id, agent_id, channel_id, creative_type, promotion_goal, effective_date)
 );
 
-CREATE INDEX idx_target_changes_lookup ON target_changes(product_id, agent_id, channel_id, creative_type, effective_date DESC);
+CREATE INDEX idx_target_changes_lookup ON target_changes(product_id, agent_id, channel_id, creative_type, promotion_goal, effective_date DESC);
 CREATE INDEX idx_target_changes_running ON target_changes(is_running) WHERE is_running = true;
 ALTER TABLE target_changes ADD COLUMN IF NOT EXISTS product_id UUID REFERENCES products(id) ON DELETE RESTRICT;
 ALTER TABLE target_changes ADD COLUMN IF NOT EXISTS creative_type TEXT NOT NULL DEFAULT '';
+ALTER TABLE target_changes ADD COLUMN IF NOT EXISTS promotion_goal TEXT NOT NULL DEFAULT '拉新';
 ALTER TABLE target_changes ADD COLUMN IF NOT EXISTS activation_cap NUMERIC(14, 2) CHECK (activation_cap >= 0);
 
 WITH source_creatives AS (
@@ -144,8 +192,16 @@ FROM agent_creatives
 WHERE agents.id = agent_creatives.agent_id
   AND (agents.creative_types IS NULL OR cardinality(agents.creative_types) = 0);
 
+INSERT INTO agent_authorized_scopes(agent_id, creative_type, promotion_goal)
+SELECT agents.id, creative_type, '拉新'
+FROM agents
+CROSS JOIN LATERAL unnest(agents.creative_types) AS creative_type
+WHERE btrim(creative_type) <> ''
+ON CONFLICT (agent_id, creative_type, promotion_goal)
+DO UPDATE SET is_active = true, updated_at = now();
+
 -- ============================================================
--- 6. alert_results: site alerts and computed deltas
+-- 7. alert_results: site alerts and computed deltas
 -- ============================================================
 CREATE TABLE alert_results (
     id                            UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -155,6 +211,7 @@ CREATE TABLE alert_results (
     product_id                    UUID NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
     channel_id                    UUID NOT NULL REFERENCES channels(id) ON DELETE RESTRICT,
     creative_type                 TEXT NOT NULL,
+    promotion_goal                TEXT NOT NULL DEFAULT '拉新',
 
     cost_dod                      NUMERIC(12, 4),
     activations_dod               NUMERIC(12, 4),
@@ -196,6 +253,7 @@ CREATE INDEX idx_alert_results_product ON alert_results(product_id);
 CREATE INDEX idx_alert_results_channel ON alert_results(channel_id);
 CREATE INDEX idx_alert_results_open ON alert_results(status, has_alert) WHERE has_alert = true;
 ALTER TABLE alert_results ADD COLUMN IF NOT EXISTS product_id UUID REFERENCES products(id) ON DELETE RESTRICT;
+ALTER TABLE alert_results ADD COLUMN IF NOT EXISTS promotion_goal TEXT NOT NULL DEFAULT '拉新';
 ALTER TABLE alert_results ADD COLUMN IF NOT EXISTS is_cost_alert BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE alert_results ADD COLUMN IF NOT EXISTS is_activations_alert BOOLEAN NOT NULL DEFAULT false;
 
@@ -275,7 +333,10 @@ $$ LANGUAGE plpgsql;
 
 CREATE TRIGGER trg_channels_updated BEFORE UPDATE ON channels FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 CREATE TRIGGER trg_products_updated BEFORE UPDATE ON products FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+CREATE TRIGGER trg_creative_types_updated BEFORE UPDATE ON creative_types FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+CREATE TRIGGER trg_promotion_goals_updated BEFORE UPDATE ON promotion_goals FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 CREATE TRIGGER trg_agents_updated BEFORE UPDATE ON agents FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+CREATE TRIGGER trg_agent_authorized_scopes_updated BEFORE UPDATE ON agent_authorized_scopes FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 CREATE TRIGGER trg_daily_records_updated BEFORE UPDATE ON daily_records FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 CREATE TRIGGER trg_target_changes_updated BEFORE UPDATE ON target_changes FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 CREATE TRIGGER trg_alert_results_updated BEFORE UPDATE ON alert_results FOR EACH ROW EXECUTE FUNCTION update_updated_at();

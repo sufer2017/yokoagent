@@ -27,6 +27,7 @@ interface TargetRow extends TargetLike {
   product_id: string;
   channel_id: string;
   creative_type: string;
+  promotion_goal: string;
   effective_date: string;
 }
 
@@ -49,6 +50,7 @@ interface SourceRecord extends MetricRecordLike {
   channel_id: string;
   record_date: string;
   creative_type: string;
+  promotion_goal: string;
   ctr: number | string | null;
   cvr: number | string | null;
   cpm: number | string | null;
@@ -99,6 +101,7 @@ interface HighlightItem {
   product_name: string;
   channel_name: string;
   creative_type: string;
+  promotion_goal: string;
   agent_name: string;
   feishu_webhook: string;
   metric: IssueMetric;
@@ -132,13 +135,14 @@ function relationWebhook(value: unknown) {
   return relation?.feishu_webhook || '';
 }
 
-function latestTarget(targets: TargetRow[], productId: string, agentId: string, channelId: string, creativeType: string, recordDate: string) {
+function latestTarget(targets: TargetRow[], productId: string, agentId: string, channelId: string, creativeType: string, promotionGoal: string, recordDate: string) {
   return targets
     .filter((target) => (
       target.product_id === productId &&
       target.agent_id === agentId &&
       target.channel_id === channelId &&
       target.creative_type === creativeType &&
+      target.promotion_goal === promotionGoal &&
       target.effective_date <= recordDate
     ))
     .sort((left, right) => right.effective_date.localeCompare(left.effective_date))[0] || null;
@@ -287,7 +291,7 @@ function issueStatusFor(row: ReportRow, issueKey: string, issueStatusById: Map<s
 }
 
 function summarySentence(row: ReportRow, metric: AlertMetricKey, issueType: IssueType, deviation: number | null, baseline: number | null) {
-  const scope = `${row.product_name} / ${row.channel_name} / ${row.creative_type} / ${row.agent_name}`;
+  const scope = `${row.product_name} / ${row.channel_name} / ${row.creative_type} / ${row.promotion_goal} / ${row.agent_name}`;
   const unit = issueUnit(metric);
   const actual = valueForMetric(row, metric);
   const label = metricLabel(metric);
@@ -331,6 +335,7 @@ function addHighlight(
     product_name: row.product_name,
     channel_name: row.channel_name,
     creative_type: row.creative_type,
+    promotion_goal: row.promotion_goal,
     agent_name: row.agent_name,
     feishu_webhook: row.feishu_webhook,
     metric: issueMetricName(metric),
@@ -402,6 +407,7 @@ function buildHighlightItems(
       left.product_name.localeCompare(right.product_name, 'zh-Hans-CN') ||
       left.channel_name.localeCompare(right.channel_name, 'zh-Hans-CN') ||
       left.creative_type.localeCompare(right.creative_type, 'zh-Hans-CN') ||
+      left.promotion_goal.localeCompare(right.promotion_goal, 'zh-Hans-CN') ||
       left.agent_name.localeCompare(right.agent_name, 'zh-Hans-CN')
     ))
     .map((item, index) => ({ ...item, rank: index + 1 }));
@@ -429,7 +435,7 @@ function localReportRows(db: LocalDb, rows: LocalDailyRecord[], alertByRecordId:
         agentName: agent?.name || '',
         feishuWebhook: agent?.feishu_webhook || '',
       },
-      latestTargetForRecord(db, record.agent_id, record.channel_id, record.record_date, record.product_id, record.creative_type),
+      latestTargetForRecord(db, record.agent_id, record.channel_id, record.record_date, record.product_id, record.creative_type, record.promotion_goal),
       alertByRecordId.get(record.id) || null
     );
   });
@@ -455,6 +461,7 @@ export async function GET(request: NextRequest) {
     let channelIds = parseList(searchParams, 'channelIds', 'channelId');
     let agentIds = parseList(searchParams, 'agentIds', 'agentId');
     const creativeTypes = parseList(searchParams, 'creativeTypes', 'creativeType');
+    const promotionGoals = parseList(searchParams, 'promotionGoals', 'promotionGoal');
 
     if (session.role === 'agent') {
       productIds = [session.productId!];
@@ -474,7 +481,8 @@ export async function GET(request: NextRequest) {
         .filter((record) => productIds.length === 0 || productIds.includes(record.product_id))
         .filter((record) => channelIds.length === 0 || channelIds.includes(record.channel_id))
         .filter((record) => agentIds.length === 0 || agentIds.includes(record.agent_id))
-        .filter((record) => creativeTypes.length === 0 || creativeTypes.includes(record.creative_type));
+        .filter((record) => creativeTypes.length === 0 || creativeTypes.includes(record.creative_type))
+        .filter((record) => promotionGoals.length === 0 || promotionGoals.includes(record.promotion_goal));
 
       return NextResponse.json({
         success: true,
@@ -485,22 +493,25 @@ export async function GET(request: NextRequest) {
     const supabase = createServerSupabase();
     let recordsQuery = supabase
       .from('daily_records')
-      .select('id, agent_id, product_id, channel_id, record_date, creative_type, cost, activations, cpa, ctr, cvr, cpm, retention_day1, retention_day7, agents(name, feishu_webhook), products(name), channels(name)')
+      .select('id, agent_id, product_id, channel_id, record_date, creative_type, promotion_goal, cost, activations, cpa, ctr, cvr, cpm, retention_day1, retention_day7, agents(name, feishu_webhook), products(name), channels(name)')
       .eq('record_date', reportDate);
 
     if (productIds.length > 0) recordsQuery = recordsQuery.in('product_id', productIds);
     if (channelIds.length > 0) recordsQuery = recordsQuery.in('channel_id', channelIds);
     if (agentIds.length > 0) recordsQuery = recordsQuery.in('agent_id', agentIds);
     if (creativeTypes.length > 0) recordsQuery = recordsQuery.in('creative_type', creativeTypes);
+    if (promotionGoals.length > 0) recordsQuery = recordsQuery.in('promotion_goal', promotionGoals);
 
     let targetsQuery = supabase
       .from('target_changes')
-      .select('agent_id, product_id, channel_id, creative_type, effective_date, target_cpa, target_retention_day1, target_retention_day7, activation_cap')
+      .select('agent_id, product_id, channel_id, creative_type, promotion_goal, effective_date, target_cpa, target_retention_day1, target_retention_day7, activation_cap')
       .lte('effective_date', reportDate)
       .order('effective_date', { ascending: false });
     if (productIds.length > 0) targetsQuery = targetsQuery.in('product_id', productIds);
     if (channelIds.length > 0) targetsQuery = targetsQuery.in('channel_id', channelIds);
     if (agentIds.length > 0) targetsQuery = targetsQuery.in('agent_id', agentIds);
+    if (creativeTypes.length > 0) targetsQuery = targetsQuery.in('creative_type', creativeTypes);
+    if (promotionGoals.length > 0) targetsQuery = targetsQuery.in('promotion_goal', promotionGoals);
 
     const [recordsRes, targetsRes] = await Promise.all([recordsQuery, targetsQuery]);
     if (recordsRes.error) throw recordsRes.error;
@@ -538,6 +549,7 @@ export async function GET(request: NextRequest) {
         channel_id: String(row.channel_id),
         record_date: String(row.record_date),
         creative_type: String(row.creative_type || ''),
+        promotion_goal: String(row.promotion_goal || ''),
         cost: row.cost as number | string | null,
         activations: row.activations as number | string | null,
         cpa: row.cpa as number | string | null,
@@ -555,7 +567,7 @@ export async function GET(request: NextRequest) {
           agentName: relationName(row.agents),
           feishuWebhook: relationWebhook(row.agents),
         },
-        latestTarget(targets, source.product_id, source.agent_id, source.channel_id, source.creative_type, source.record_date),
+        latestTarget(targets, source.product_id, source.agent_id, source.channel_id, source.creative_type, source.promotion_goal, source.record_date),
         alertByRecordId.get(source.id) || null
       );
     });

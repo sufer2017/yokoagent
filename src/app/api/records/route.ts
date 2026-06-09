@@ -3,9 +3,12 @@ import { createServerSupabase, hasSupabaseConfig } from '@/lib/supabase/server';
 import { getSession } from '@/lib/auth/session';
 import { recalculateAlertsForRecordIds } from '@/lib/alerts/engine';
 import { pruneSupabaseBusinessData } from '@/lib/admin/retention';
+import { DEFAULT_PROMOTION_GOAL, normalizeDictionaryName } from '@/lib/admin/creativeTypes';
+import { isSupabaseScopeAuthorized } from '@/lib/admin/scopes';
 import {
   decorateRecord,
   computedCpa,
+  isLocalScopeAuthorized,
   mutateLocalDb,
   newId,
   nowIso,
@@ -25,7 +28,8 @@ async function latestTargetForRecord(
   channelId: string,
   recordDate: string,
   productId: string,
-  creativeType: string
+  creativeType: string,
+  promotionGoal: string
 ) {
   const { data } = await supabase
     .from('target_changes')
@@ -34,6 +38,7 @@ async function latestTargetForRecord(
     .eq('product_id', productId)
     .eq('channel_id', channelId)
     .eq('creative_type', creativeType)
+    .eq('promotion_goal', promotionGoal)
     .lte('effective_date', recordDate)
     .order('effective_date', { ascending: false })
     .limit(1)
@@ -63,6 +68,7 @@ export async function GET(request: NextRequest) {
     const channelId = searchParams.get('channelId');
     const agentId = searchParams.get('agentId');
     const creativeType = searchParams.get('creativeType');
+    const promotionGoal = searchParams.get('promotionGoal');
 
     if (!hasSupabaseConfig()) {
       const db = await readLocalDb();
@@ -79,6 +85,7 @@ export async function GET(request: NextRequest) {
       if (dateFrom) records = records.filter((record) => record.record_date >= dateFrom);
       if (dateTo) records = records.filter((record) => record.record_date <= dateTo);
       if (creativeType) records = records.filter((record) => record.creative_type.includes(creativeType));
+      if (promotionGoal) records = records.filter((record) => record.promotion_goal === promotionGoal);
 
       records.sort((left, right) => (
         right.record_date.localeCompare(left.record_date) ||
@@ -110,6 +117,7 @@ export async function GET(request: NextRequest) {
     if (dateFrom) query = query.gte('record_date', dateFrom);
     if (dateTo) query = query.lte('record_date', dateTo);
     if (creativeType) query = query.ilike('creative_type', `%${creativeType}%`);
+    if (promotionGoal) query = query.eq('promotion_goal', promotionGoal);
 
     const { data, error } = await query;
     if (error) throw error;
@@ -126,7 +134,8 @@ export async function GET(request: NextRequest) {
         raw.channel_id as string,
         raw.record_date as string,
         raw.product_id as string,
-        raw.creative_type as string
+        raw.creative_type as string,
+        String(raw.promotion_goal || DEFAULT_PROMOTION_GOAL)
       );
 
       records.push({
@@ -163,16 +172,25 @@ export async function POST(request: Request) {
     }
 
     const body = await request.json();
+    const creativeType = normalizeDictionaryName(body.creative_type);
+    const promotionGoal = normalizeDictionaryName(body.promotion_goal) || DEFAULT_PROMOTION_GOAL;
+    if (!creativeType || !promotionGoal) {
+      return NextResponse.json({ success: false, error: '请选择体裁和投放目标' }, { status: 400 });
+    }
     if (!hasSupabaseConfig()) {
       const data = await mutateLocalDb((db) => {
+        if (!isLocalScopeAuthorized(db, session.agentId!, creativeType, promotionGoal)) {
+          throw new Error('该体裁/投放目标未授权，请联系管理员配置');
+        }
         if (db.daily_records.some((record) => (
           record.agent_id === session.agentId &&
           record.product_id === session.productId &&
           record.channel_id === session.channelId &&
           record.record_date === body.record_date &&
-          record.creative_type === String(body.creative_type || '').trim()
+          record.creative_type === creativeType &&
+          record.promotion_goal === promotionGoal
         ))) {
-          throw new Error('该日期/体裁已存在记录，请直接编辑');
+          throw new Error('该日期/体裁/投放目标已存在记录，请直接编辑');
         }
 
         const timestamp = nowIso();
@@ -182,7 +200,8 @@ export async function POST(request: Request) {
           product_id: session.productId!,
           channel_id: session.channelId!,
           record_date: body.record_date,
-          creative_type: String(body.creative_type || '').trim(),
+          creative_type: creativeType,
+          promotion_goal: promotionGoal,
           cost: Number(body.cost || 0),
           activations: Number(body.activations || 0),
           cpa: computedCpa(body.cost, body.activations),
@@ -204,6 +223,10 @@ export async function POST(request: Request) {
     }
 
     const supabase = createServerSupabase();
+    const authorized = await isSupabaseScopeAuthorized(supabase, session.agentId!, creativeType, promotionGoal);
+    if (!authorized) {
+      return NextResponse.json({ success: false, error: '该体裁/投放目标未授权，请联系管理员配置' }, { status: 403 });
+    }
 
     const { data, error } = await supabase
       .from('daily_records')
@@ -212,7 +235,8 @@ export async function POST(request: Request) {
         product_id: session.productId,
         channel_id: session.channelId,
         record_date: body.record_date,
-        creative_type: String(body.creative_type || '').trim(),
+        creative_type: creativeType,
+        promotion_goal: promotionGoal,
         cost: body.cost || 0,
         activations: body.activations || 0,
         cpa: computedCpa(body.cost, body.activations),
@@ -229,7 +253,7 @@ export async function POST(request: Request) {
     if (error) {
       if (error.code === '23505') {
         return NextResponse.json(
-          { success: false, error: '该日期/体裁已存在记录，请直接编辑' },
+          { success: false, error: '该日期/体裁/投放目标已存在记录，请直接编辑' },
           { status: 409 }
         );
       }

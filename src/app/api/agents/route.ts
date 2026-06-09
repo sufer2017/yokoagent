@@ -4,7 +4,13 @@ import { getSession } from '@/lib/auth/session';
 import { hashPassword } from '@/lib/auth/password';
 import { decorateAgent, mutateLocalDb, newId, nowIso, readLocalDb } from '@/lib/local-db/store';
 import { generateAgentPassword } from '@/lib/admin/passwords';
-import { normalizeCreativeTypes } from '@/lib/admin/creativeTypes';
+import { normalizeAuthorizedScopes } from '@/lib/admin/creativeTypes';
+import {
+  creativeTypesFromScopes,
+  fetchSupabaseAgentScopes,
+  normalizeScopePayload,
+  replaceSupabaseAgentScopes,
+} from '@/lib/admin/scopes';
 
 // GET /api/agents - List agents
 export async function GET(request: NextRequest) {
@@ -42,12 +48,16 @@ export async function GET(request: NextRequest) {
 
     const { data, error } = await query;
     if (error) throw error;
+    const scopesByAgentId = await fetchSupabaseAgentScopes(supabase, (data || []).map((row: Record<string, unknown>) => String(row.id)));
 
     const agents = (data || []).map((row: Record<string, unknown>) => {
       const channel = Array.isArray(row.channels) ? row.channels[0] : row.channels as { name?: string } | null;
       const product = Array.isArray(row.products) ? row.products[0] : row.products as { name?: string } | null;
+      const authorizedScopes = scopesByAgentId.get(String(row.id)) || normalizeAuthorizedScopes([], row.creative_types);
       return {
         ...row,
+        creative_types: creativeTypesFromScopes(authorizedScopes),
+        authorized_scopes: authorizedScopes,
         product_name: product?.name,
         channel_name: channel?.name,
         products: undefined,
@@ -70,14 +80,16 @@ export async function POST(request: Request) {
       return NextResponse.json({ success: false, error: 'Forbidden' }, { status: 403 });
     }
 
-    const { name, username, password, product_id, channel_id, feishu_webhook, creative_types } = await request.json();
-    const creativeTypes = normalizeCreativeTypes(creative_types);
+    const body = await request.json();
+    const { name, username, password, product_id, channel_id, feishu_webhook } = body;
+    const authorizedScopes = normalizeScopePayload(body);
     if (!name?.trim() || !username?.trim() || !product_id || !channel_id) {
       return NextResponse.json({ success: false, error: '请输入产品、代理名称、账号和渠道' }, { status: 400 });
     }
-    if (creativeTypes.length === 0) {
-      return NextResponse.json({ success: false, error: '请至少填写一个体裁' }, { status: 400 });
+    if (authorizedScopes.length === 0) {
+      return NextResponse.json({ success: false, error: '请至少配置一个体裁和投放目标组合' }, { status: 400 });
     }
+    const creativeTypes = creativeTypesFromScopes(authorizedScopes);
 
     const initialPassword = String(password || '').trim() || generateAgentPassword();
     const password_hash = await hashPassword(initialPassword);
@@ -105,6 +117,24 @@ export async function POST(request: Request) {
           updated_at: timestamp,
         };
         db.agents.push(agent);
+        const normalizedScopes = normalizeAuthorizedScopes(authorizedScopes);
+        db.agent_authorized_scopes.push(...normalizedScopes.map((scope) => ({
+          id: newId(),
+          agent_id: agent.id,
+          creative_type: scope.creative_type,
+          promotion_goal: scope.promotion_goal,
+          is_active: scope.is_active,
+          created_at: timestamp,
+          updated_at: timestamp,
+        })));
+        for (const scope of normalizedScopes) {
+          if (!db.creative_types.some((item) => item.name === scope.creative_type)) {
+            db.creative_types.push({ id: newId(), name: scope.creative_type, is_active: true, created_at: timestamp, updated_at: timestamp });
+          }
+          if (!db.promotion_goals.some((item) => item.name === scope.promotion_goal)) {
+            db.promotion_goals.push({ id: newId(), name: scope.promotion_goal, is_active: true, created_at: timestamp, updated_at: timestamp });
+          }
+        }
         return decorateAgent(db, agent);
       });
 
@@ -133,8 +163,9 @@ export async function POST(request: Request) {
       }
       throw error;
     }
+    await replaceSupabaseAgentScopes(supabase, data.id, authorizedScopes);
 
-    return NextResponse.json({ success: true, data: { ...data, initial_password: initialPassword } });
+    return NextResponse.json({ success: true, data: { ...data, authorized_scopes: authorizedScopes, initial_password: initialPassword } });
   } catch (error) {
     console.error('POST /api/agents error:', error);
     return NextResponse.json({ success: false, error: 'Failed to create agent' }, { status: 500 });

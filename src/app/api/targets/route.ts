@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabase, hasSupabaseConfig } from '@/lib/supabase/server';
 import { getSession } from '@/lib/auth/session';
-import { decorateTarget, mutateLocalDb, newId, nowIso, readLocalDb } from '@/lib/local-db/store';
+import { DEFAULT_PROMOTION_GOAL, normalizeDictionaryName } from '@/lib/admin/creativeTypes';
+import { isSupabaseScopeAuthorized } from '@/lib/admin/scopes';
+import { decorateTarget, isLocalScopeAuthorized, mutateLocalDb, newId, nowIso, readLocalDb } from '@/lib/local-db/store';
 
 function toNumberOrNull(value: unknown) {
   if (value === '' || value == null) return null;
@@ -77,8 +79,10 @@ export async function POST(request: Request) {
     }
 
     const body = await request.json();
-    if (!body.product_id || !body.agent_id || !body.channel_id || !body.creative_type || !body.effective_date) {
-      return NextResponse.json({ success: false, error: '请选择产品、代理、渠道、体裁和生效日期' }, { status: 400 });
+    const creativeType = normalizeDictionaryName(body.creative_type);
+    const promotionGoal = normalizeDictionaryName(body.promotion_goal) || DEFAULT_PROMOTION_GOAL;
+    if (!body.product_id || !body.agent_id || !body.channel_id || !creativeType || !promotionGoal || !body.effective_date) {
+      return NextResponse.json({ success: false, error: '请选择产品、代理、渠道、体裁、投放目标和生效日期' }, { status: 400 });
     }
 
     if (!hasSupabaseConfig()) {
@@ -90,16 +94,20 @@ export async function POST(request: Request) {
       if (agent.product_id !== body.product_id || agent.channel_id !== body.channel_id) {
         return NextResponse.json({ success: false, error: '代理商与所选产品/渠道不匹配' }, { status: 400 });
       }
+      if (!isLocalScopeAuthorized(db, body.agent_id, creativeType, promotionGoal)) {
+        return NextResponse.json({ success: false, error: '该代理未授权此体裁/投放目标组合，请先在账号与渠道配置' }, { status: 400 });
+      }
 
       const data = await mutateLocalDb((db) => {
         if (db.target_changes.some((target) => (
           target.agent_id === body.agent_id &&
           target.product_id === body.product_id &&
           target.channel_id === body.channel_id &&
-          target.creative_type === String(body.creative_type).trim() &&
+          target.creative_type === creativeType &&
+          target.promotion_goal === promotionGoal &&
           target.effective_date === body.effective_date
         ))) {
-          throw new Error('该产品/渠道/代理/体裁在该生效日期已有考核记录');
+          throw new Error('该产品/渠道/代理/体裁/投放目标在该生效日期已有考核记录');
         }
         const timestamp = nowIso();
         const target = {
@@ -107,7 +115,8 @@ export async function POST(request: Request) {
           agent_id: body.agent_id,
           product_id: body.product_id,
           channel_id: body.channel_id,
-          creative_type: String(body.creative_type).trim(),
+          creative_type: creativeType,
+          promotion_goal: promotionGoal,
           effective_date: body.effective_date,
           is_running: body.is_running ?? true,
           target_cpa: toNumberOrNull(body.target_cpa),
@@ -139,6 +148,10 @@ export async function POST(request: Request) {
     if (agent.product_id !== body.product_id || agent.channel_id !== body.channel_id) {
       return NextResponse.json({ success: false, error: '代理商与所选产品/渠道不匹配' }, { status: 400 });
     }
+    const authorized = await isSupabaseScopeAuthorized(supabase, body.agent_id, creativeType, promotionGoal);
+    if (!authorized) {
+      return NextResponse.json({ success: false, error: '该代理未授权此体裁/投放目标组合，请先在账号与渠道配置' }, { status: 400 });
+    }
 
     const { data, error } = await supabase
       .from('target_changes')
@@ -146,7 +159,8 @@ export async function POST(request: Request) {
         agent_id: body.agent_id,
         product_id: body.product_id,
         channel_id: body.channel_id,
-        creative_type: String(body.creative_type).trim(),
+        creative_type: creativeType,
+        promotion_goal: promotionGoal,
         effective_date: body.effective_date,
         is_running: body.is_running ?? true,
         target_cpa: toNumberOrNull(body.target_cpa),
@@ -160,7 +174,7 @@ export async function POST(request: Request) {
 
     if (error) {
       if (error.code === '23505') {
-        return NextResponse.json({ success: false, error: '该代理在该生效日期已有考核记录' }, { status: 409 });
+        return NextResponse.json({ success: false, error: '该代理在该体裁/投放目标/生效日期已有考核记录' }, { status: 409 });
       }
       throw error;
     }

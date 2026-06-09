@@ -6,6 +6,8 @@ import { getSession } from '@/lib/auth/session';
 import { hashPassword } from '@/lib/auth/password';
 import { pruneSupabaseBusinessData } from '@/lib/admin/retention';
 import { DEMO_AGENT_CREDENTIALS } from '@/lib/admin/passwords';
+import { DEFAULT_PROMOTION_GOAL } from '@/lib/admin/creativeTypes';
+import { upsertSupabaseDictionaries } from '@/lib/admin/scopes';
 import {
   cascadeDeleteAgents,
   cascadeDeleteRecords,
@@ -13,6 +15,7 @@ import {
   newId,
   nowIso,
   recalculateLocalAlertsForRecordIds,
+  replaceLocalAgentScopes,
   type LocalDb,
 } from '@/lib/local-db/store';
 
@@ -33,14 +36,14 @@ const DEMO_PRODUCTS = [
 ] as const;
 
 const DEMO_AGENTS = [
-  { key: 'gdt-a', username: 'gdt-a', name: '演示-广点通A代理', productKey: 'game-a', channelKey: 'gdt', feishuWebhook: 'demo-feishu-webhook://gdt-a', baseCpa: 88, day1: 38, day7: 15, baseActivations: 96, creatives: ['短剧', '小说'] },
-  { key: 'gdt-b', username: 'gdt-b', name: '演示-广点通B代理', productKey: 'game-a', channelKey: 'gdt', feishuWebhook: 'demo-feishu-webhook://gdt-b', baseCpa: 94, day1: 36, day7: 14, baseActivations: 82, creatives: ['短剧', '小游戏'] },
-  { key: 'douyin-a', username: 'douyin-a', name: '演示-抖音A代理', productKey: 'game-a', channelKey: 'douyin', feishuWebhook: 'demo-feishu-webhook://douyin-a', baseCpa: 84, day1: 37, day7: 14, baseActivations: 110, creatives: ['工具', '小说'] },
-  { key: 'douyin-b', username: 'douyin-b', name: '演示-抖音B代理', productKey: 'game-b', channelKey: 'douyin', feishuWebhook: 'demo-feishu-webhook://douyin-b', baseCpa: 90, day1: 35, day7: 13, baseActivations: 92, creatives: ['短剧', '工具'] },
-  { key: 'kuaishou-a', username: 'kuaishou-a', name: '演示-快手A代理', productKey: 'game-b', channelKey: 'kuaishou', feishuWebhook: 'demo-feishu-webhook://kuaishou-a', baseCpa: 86, day1: 36, day7: 13, baseActivations: 88, creatives: ['小游戏', '短剧'] },
-  { key: 'kuaishou-b', username: 'kuaishou-b', name: '演示-快手B代理', productKey: 'game-b', channelKey: 'kuaishou', feishuWebhook: 'demo-feishu-webhook://kuaishou-b', baseCpa: 92, day1: 34, day7: 12, baseActivations: 76, creatives: ['小说', '工具'] },
-  { key: 'xhs-a', username: 'xhs-a', name: '演示-小红书A代理', productKey: 'game-a', channelKey: 'xhs', feishuWebhook: 'demo-feishu-webhook://xhs-a', baseCpa: 78, day1: 39, day7: 16, baseActivations: 72, creatives: ['工具', '小游戏'] },
-  { key: 'xhs-b', username: 'xhs-b', name: '演示-小红书B代理', productKey: 'game-b', channelKey: 'xhs', feishuWebhook: 'demo-feishu-webhook://xhs-b', baseCpa: 82, day1: 37, day7: 15, baseActivations: 68, creatives: ['短剧', '小说'] },
+  { key: 'gdt-a', username: 'gdt-a', name: '演示-广点通A代理', productKey: 'game-a', channelKey: 'gdt', feishuWebhook: 'demo-feishu-webhook://gdt-a', baseCpa: 88, day1: 38, day7: 15, baseActivations: 96, creatives: ['短剧', '单本'] },
+  { key: 'gdt-b', username: 'gdt-b', name: '演示-广点通B代理', productKey: 'game-a', channelKey: 'gdt', feishuWebhook: 'demo-feishu-webhook://gdt-b', baseCpa: 94, day1: 36, day7: 14, baseActivations: 82, creatives: ['短剧', '影游'] },
+  { key: 'douyin-a', username: 'douyin-a', name: '演示-抖音A代理', productKey: 'game-a', channelKey: 'douyin', feishuWebhook: 'demo-feishu-webhook://douyin-a', baseCpa: 84, day1: 37, day7: 14, baseActivations: 110, creatives: ['有声', '单本'] },
+  { key: 'douyin-b', username: 'douyin-b', name: '演示-抖音B代理', productKey: 'game-b', channelKey: 'douyin', feishuWebhook: 'demo-feishu-webhook://douyin-b', baseCpa: 90, day1: 35, day7: 13, baseActivations: 92, creatives: ['短剧', '有声'] },
+  { key: 'kuaishou-a', username: 'kuaishou-a', name: '演示-快手A代理', productKey: 'game-b', channelKey: 'kuaishou', feishuWebhook: 'demo-feishu-webhook://kuaishou-a', baseCpa: 86, day1: 36, day7: 13, baseActivations: 88, creatives: ['影游', '短剧'] },
+  { key: 'kuaishou-b', username: 'kuaishou-b', name: '演示-快手B代理', productKey: 'game-b', channelKey: 'kuaishou', feishuWebhook: 'demo-feishu-webhook://kuaishou-b', baseCpa: 92, day1: 34, day7: 12, baseActivations: 76, creatives: ['单本', '有声'] },
+  { key: 'xhs-a', username: 'xhs-a', name: '演示-小红书A代理', productKey: 'game-a', channelKey: 'xhs', feishuWebhook: 'demo-feishu-webhook://xhs-a', baseCpa: 78, day1: 39, day7: 16, baseActivations: 72, creatives: ['红包', '影游'] },
+  { key: 'xhs-b', username: 'xhs-b', name: '演示-小红书B代理', productKey: 'game-b', channelKey: 'xhs', feishuWebhook: 'demo-feishu-webhook://xhs-b', baseCpa: 82, day1: 37, day7: 15, baseActivations: 68, creatives: ['短剧', '单本'] },
 ] as const;
 
 const DEMO_AGENT_USERNAMES: string[] = DEMO_AGENTS.map((agent) => agent.username);
@@ -59,6 +62,7 @@ interface InsertedRecord {
   channel_id: string;
   record_date: string;
   creative_type: string;
+  promotion_goal: string;
   cost: number | string | null;
   activations: number | string | null;
   cpa: number | string | null;
@@ -131,8 +135,8 @@ function metricValue(record: InsertedRecord | null, key: MetricKey) {
   return toNumber(record[key]);
 }
 
-function relationKey(record: Pick<InsertedRecord, 'agent_id' | 'product_id' | 'channel_id' | 'record_date' | 'creative_type'>) {
-  return `${record.product_id}:${record.agent_id}:${record.channel_id}:${record.record_date}:${record.creative_type}`;
+function relationKey(record: Pick<InsertedRecord, 'agent_id' | 'product_id' | 'channel_id' | 'record_date' | 'creative_type' | 'promotion_goal'>) {
+  return `${record.product_id}:${record.agent_id}:${record.channel_id}:${record.record_date}:${record.creative_type}:${record.promotion_goal}`;
 }
 
 function chunk<T>(items: T[], size: number) {
@@ -211,12 +215,12 @@ function buildRecordRows(
         activations = Math.max(18, Math.round(activations * 0.72));
       }
 
-      if (isFocusDate && agent.key === 'douyin-b' && creativeType === '工具') {
+      if (isFocusDate && agent.key === 'douyin-b' && creativeType === '有声') {
         day1 -= 12.5;
         day7 -= 4.2;
       }
 
-      if (isFocusDate && agent.key === 'kuaishou-a' && creativeType === '小游戏') {
+      if (isFocusDate && agent.key === 'kuaishou-a' && creativeType === '影游') {
         cpa *= 1.22;
         day7 -= 5.5;
       }
@@ -232,6 +236,7 @@ function buildRecordRows(
         channel_id: channelId,
         record_date: recordDate,
         creative_type: creativeType,
+        promotion_goal: DEFAULT_PROMOTION_GOAL,
         cost,
         activations,
         cpa: activations > 0 ? round(cost / activations) : null,
@@ -248,8 +253,8 @@ function buildRecordRows(
   return rows;
 }
 
-function targetScopeKey(record: Pick<InsertedRecord, 'product_id' | 'agent_id' | 'channel_id' | 'creative_type'>) {
-  return `${record.product_id}:${record.agent_id}:${record.channel_id}:${record.creative_type}`;
+function targetScopeKey(record: Pick<InsertedRecord, 'product_id' | 'agent_id' | 'channel_id' | 'creative_type' | 'promotion_goal'>) {
+  return `${record.product_id}:${record.agent_id}:${record.channel_id}:${record.creative_type}:${record.promotion_goal}`;
 }
 
 function buildAlertRows(insertedRecords: InsertedRecord[], targetByScope: Map<string, TargetSnapshot[]>) {
@@ -320,6 +325,7 @@ function buildAlertRows(insertedRecords: InsertedRecord[], targetByScope: Map<st
       product_id: record.product_id,
       channel_id: record.channel_id,
       creative_type: record.creative_type,
+      promotion_goal: record.promotion_goal,
       cost_dod: deltas.cost_dod,
       activations_dod: deltas.activations_dod,
       cpa_dod: deltas.cpa_dod,
@@ -586,6 +592,10 @@ async function initializeLocalDemo() {
       };
       db.agents.push(row);
       agentIdByUsername.set(agent.username, row.id);
+      replaceLocalAgentScopes(db, row.id, agent.creatives.map((creativeType) => ({
+        creative_type: creativeType,
+        promotion_goal: DEFAULT_PROMOTION_GOAL,
+      })));
     }
 
     const focusDate = dayjs().subtract(1, 'day');
@@ -606,6 +616,7 @@ async function initializeLocalDemo() {
             product_id: productId,
             channel_id: channelId,
             creative_type: creativeType,
+            promotion_goal: DEFAULT_PROMOTION_GOAL,
             is_running: true,
             effective_date: snapshot.effective_date,
             target_cpa: snapshot.target_cpa,
@@ -742,6 +753,22 @@ export async function POST() {
     if (insertAgentError) throw insertAgentError;
 
     const agentIdByUsername = new Map((agents || []).map((agent) => [String(agent.username), String(agent.id)]));
+    const scopeRows = DEMO_AGENTS.flatMap((agent) => {
+      const agentId = agentIdByUsername.get(agent.username);
+      if (!agentId) return [];
+      return agent.creatives.map((creativeType) => ({
+        agent_id: agentId,
+        creative_type: creativeType,
+        promotion_goal: DEFAULT_PROMOTION_GOAL,
+        is_active: true,
+      }));
+    });
+    await upsertSupabaseDictionaries(supabase, scopeRows);
+    const { error: scopeError } = await supabase
+      .from('agent_authorized_scopes')
+      .upsert(scopeRows, { onConflict: 'agent_id,creative_type,promotion_goal' });
+    if (scopeError) throw scopeError;
+
     const focusDate = dayjs().subtract(1, 'day');
     const targetByScope = new Map<string, TargetSnapshot[]>();
     const targetRows = [];
@@ -757,12 +784,13 @@ export async function POST() {
 
       const snapshots = buildTargetSnapshots(agent, focusDate);
       for (const creativeType of agent.creatives) {
-        targetByScope.set(`${productId}:${agentId}:${channelId}:${creativeType}`, snapshots);
+        targetByScope.set(`${productId}:${agentId}:${channelId}:${creativeType}:${DEFAULT_PROMOTION_GOAL}`, snapshots);
         targetRows.push(...snapshots.map((snapshot, index) => ({
           agent_id: agentId,
           product_id: productId,
           channel_id: channelId,
           creative_type: creativeType,
+          promotion_goal: DEFAULT_PROMOTION_GOAL,
           is_running: true,
           effective_date: snapshot.effective_date,
           target_cpa: snapshot.target_cpa,
@@ -786,7 +814,7 @@ export async function POST() {
       const { data, error } = await supabase
         .from('daily_records')
         .insert(rows)
-        .select('id, agent_id, product_id, channel_id, record_date, creative_type, cost, activations, cpa, ctr, cvr, cpm, retention_day1, retention_day7');
+        .select('id, agent_id, product_id, channel_id, record_date, creative_type, promotion_goal, cost, activations, cpa, ctr, cvr, cpm, retention_day1, retention_day7');
 
       if (error) throw error;
       insertedRecords.push(...((data || []) as InsertedRecord[]));

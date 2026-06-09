@@ -49,6 +49,7 @@ interface AlertRow {
   product_name: string;
   channel_name: string;
   creative_type: string;
+  promotion_goal: string;
   agent_name: string;
   feishu_webhook?: string | null;
   status: string;
@@ -62,6 +63,7 @@ interface AlertDetailRow {
   product_name: string;
   channel_name: string;
   creative_type: string;
+  promotion_goal: string;
   agent_name: string;
   feishu_webhook: string;
   alert_metric: AlertMetric;
@@ -86,6 +88,7 @@ interface HighlightItem {
   product_name: string;
   channel_name: string;
   creative_type: string;
+  promotion_goal: string;
   agent_name: string;
   feishu_webhook: string;
   metric: AlertMetric;
@@ -183,6 +186,7 @@ function buildDataDashboardHref(item: HighlightItem, isAgentScope: boolean, repo
     dateTo,
   });
   if (item.creative_type) params.set('creativeTypes', item.creative_type);
+  if (item.promotion_goal) params.set('promotionGoals', item.promotion_goal);
 
   if (isAgentScope) {
     params.set('tab', 'data');
@@ -259,6 +263,7 @@ function metricDetailRows(rows: AlertRow[]) {
           product_name: row.product_name,
           channel_name: row.channel_name,
           creative_type: row.creative_type,
+          promotion_goal: row.promotion_goal,
           agent_name: row.agent_name,
           feishu_webhook: row.feishu_webhook || '',
           alert_metric: detail.name,
@@ -409,6 +414,7 @@ export default function AlertCenter({
   const [loading, setLoading] = useState(true);
   const [dailyLoading, setDailyLoading] = useState(!isAgentScope);
   const [status, setStatus] = useState<AlertStatusFilter>('all');
+  const [promotionGoal, setPromotionGoal] = useState<string | undefined>();
   const [alertPage, setAlertPage] = useState<AlertPageState>({
     total: 0,
     current: 1,
@@ -441,6 +447,7 @@ export default function AlertCenter({
       if (isAgentScope && fixedProductId) params.set('productId', fixedProductId);
       if (isAgentScope && fixedChannelId) params.set('channelId', fixedChannelId);
       if (isAgentScope && fixedAgentId) params.set('agentId', fixedAgentId);
+      if (promotionGoal) params.set('promotionGoal', promotionGoal);
       const response = await fetch(`/api/alerts?${params.toString()}`);
       const payload = await response.json();
       if (!payload.success) {
@@ -457,7 +464,7 @@ export default function AlertCenter({
     } finally {
       setLoading(false);
     }
-  }, [alertPageCurrent, alertPageSize, detailDateRange, fixedAgentId, fixedChannelId, fixedProductId, isAgentScope, messageApi, status]);
+  }, [alertPageCurrent, alertPageSize, detailDateRange, fixedAgentId, fixedChannelId, fixedProductId, isAgentScope, messageApi, promotionGoal, status]);
 
   const fetchDailyReport = useCallback(async () => {
     if (isAgentScope) {
@@ -475,6 +482,7 @@ export default function AlertCenter({
       if (isAgentScope && fixedProductId) params.set('productId', fixedProductId);
       if (isAgentScope && fixedChannelId) params.set('channelId', fixedChannelId);
       if (isAgentScope && fixedAgentId) params.set('agentId', fixedAgentId);
+      if (promotionGoal) params.set('promotionGoal', promotionGoal);
       const response = await fetch(`/api/daily-report?${params.toString()}`);
       const payload = await response.json();
       if (!payload.success) {
@@ -486,7 +494,7 @@ export default function AlertCenter({
     } finally {
       setDailyLoading(false);
     }
-  }, [fixedAgentId, fixedChannelId, fixedProductId, isAgentScope, messageApi, reportDate, status]);
+  }, [fixedAgentId, fixedChannelId, fixedProductId, isAgentScope, messageApi, promotionGoal, reportDate, status]);
 
   useEffect(() => {
     fetchAlerts();
@@ -512,10 +520,16 @@ export default function AlertCenter({
     setAlertPage((current) => (
       current.current === 1 ? current : { ...current, current: 1 }
     ));
-  }, [detailDateRange, status]);
+  }, [detailDateRange, promotionGoal, status]);
 
   const aimeMarkdown = useMemo(() => buildAimeMarkdown(dailyReport), [dailyReport]);
   const detailRows = useMemo(() => metricDetailRows(rows), [rows]);
+  const promotionGoalOptions = useMemo(() => (
+    Array.from(new Set([
+      ...rows.map((row) => row.promotion_goal).filter(Boolean),
+      ...(dailyReport?.highlightItems || []).map((item) => item.promotion_goal).filter(Boolean),
+    ])).sort((left, right) => left.localeCompare(right, 'zh-Hans-CN')).map((value) => ({ value, label: value }))
+  ), [dailyReport?.highlightItems, rows]);
 
   const copyMarkdown = async () => {
     if (!dailyReport) {
@@ -662,6 +676,14 @@ export default function AlertCenter({
       render: (value: string) => <Tag color="purple">{value || '-'}</Tag>,
     },
     {
+      title: '投放目标',
+      dataIndex: 'promotion_goal',
+      key: 'promotion_goal',
+      width: 120,
+      sorter: (left, right) => compareText(left.promotion_goal, right.promotion_goal),
+      render: (value: string) => <Tag color="geekblue">{value || '-'}</Tag>,
+    },
+    {
       title: '代理商',
       dataIndex: 'agent_name',
       key: 'agent_name',
@@ -743,6 +765,14 @@ export default function AlertCenter({
                   { value: 'processed', label: '已处理' },
                   { value: 'open', label: '未处理' },
                 ]}
+              />
+              <Select
+                allowClear
+                placeholder="投放目标"
+                value={promotionGoal}
+                style={{ width: 140 }}
+                onChange={setPromotionGoal}
+                options={promotionGoalOptions}
               />
             </Space>
             <Space wrap>
@@ -840,7 +870,7 @@ export default function AlertCenter({
                 })),
               }}
               locale={{ emptyText: '当前筛选条件下暂无告警明细；初始化演示数据后可看到由真实填报计算出的异常。' }}
-              scroll={{ x: isAgentScope ? 1360 : 1620 }}
+              scroll={{ x: isAgentScope ? 1480 : 1740 }}
               tableLayout="fixed"
             />
           </div>

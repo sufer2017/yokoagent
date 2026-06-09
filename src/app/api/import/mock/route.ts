@@ -6,7 +6,7 @@ import { hashPassword } from '@/lib/auth/password';
 import { recalculateAlertsForRecordIds } from '@/lib/alerts/engine';
 import { pruneSupabaseBusinessData } from '@/lib/admin/retention';
 import { generateAgentPassword } from '@/lib/admin/passwords';
-import { normalizeCreativeTypes } from '@/lib/admin/creativeTypes';
+import { DEFAULT_PROMOTION_GOAL, normalizeCreativeTypes, normalizeDictionaryName } from '@/lib/admin/creativeTypes';
 import {
   mutateLocalDb,
   newId,
@@ -21,6 +21,7 @@ const HEADER_MAP: Record<string, string> = {
   代理商名称: 'agent_name',
   代理商: 'agent_name',
   体裁: 'creative_type',
+  投放目标: 'promotion_goal',
   消耗: 'cost',
   激活数: 'activations',
   CPA: 'cpa',
@@ -155,6 +156,7 @@ async function getOrCreateAgent(
   channelName: string,
   name: string,
   creativeType: string,
+  promotionGoal: string,
   createdCredentials: Array<{ username: string; password: string }>
 ) {
   const trimmed = name.trim();
@@ -176,6 +178,14 @@ async function getOrCreateAgent(
         .eq('id', existing.id);
       if (updateError) throw updateError;
     }
+    await supabase.from('creative_types').upsert({ name: creativeType, is_active: true }, { onConflict: 'name' });
+    await supabase.from('promotion_goals').upsert({ name: promotionGoal, is_active: true }, { onConflict: 'name' });
+    await supabase.from('agent_authorized_scopes').upsert({
+      agent_id: existing.id,
+      creative_type: creativeType,
+      promotion_goal: promotionGoal,
+      is_active: true,
+    }, { onConflict: 'agent_id,creative_type,promotion_goal' });
     return existing as { id: string; name: string; product_id: string; channel_id: string };
   }
 
@@ -197,6 +207,14 @@ async function getOrCreateAgent(
     .single();
 
   if (error) throw error;
+  await supabase.from('creative_types').upsert({ name: creativeType, is_active: true }, { onConflict: 'name' });
+  await supabase.from('promotion_goals').upsert({ name: promotionGoal, is_active: true }, { onConflict: 'name' });
+  await supabase.from('agent_authorized_scopes').upsert({
+    agent_id: data.id,
+    creative_type: creativeType,
+    promotion_goal: promotionGoal,
+    is_active: true,
+  }, { onConflict: 'agent_id,creative_type,promotion_goal' });
   createdCredentials.push({ username, password });
   return data as { id: string; name: string; product_id: string; channel_id: string };
 }
@@ -227,9 +245,10 @@ export async function POST(request: Request) {
           const channelName = row.channel_name;
           const agentName = row.agent_name;
           const creativeType = row.creative_type;
+          const promotionGoal = normalizeDictionaryName(row.promotion_goal) || DEFAULT_PROMOTION_GOAL;
 
-          if (!recordDate || !channelName || !agentName || !creativeType) {
-            errors.push(`第 ${index + 2} 行缺少 日期/渠道/代理商/体裁`);
+          if (!recordDate || !channelName || !agentName || !creativeType || !promotionGoal) {
+            errors.push(`第 ${index + 2} 行缺少 日期/渠道/代理商/体裁/投放目标`);
             continue;
           }
 
@@ -281,6 +300,17 @@ export async function POST(request: Request) {
             agent.creative_types = normalizeCreativeTypes([...(agent.creative_types || []), creativeType]);
             agent.updated_at = timestamp;
           }
+          if (!db.agent_authorized_scopes.some((scope) => scope.agent_id === agent.id && scope.creative_type === creativeType.trim() && scope.promotion_goal === promotionGoal)) {
+            db.agent_authorized_scopes.push({
+              id: newId(),
+              agent_id: agent.id,
+              creative_type: creativeType.trim(),
+              promotion_goal: promotionGoal,
+              is_active: true,
+              created_at: timestamp,
+              updated_at: timestamp,
+            });
+          }
 
           const targetCpa = normalizeNumber(row.target_cpa);
           const targetDay1 = normalizeNumber(row.target_retention_day1);
@@ -292,6 +322,7 @@ export async function POST(request: Request) {
               target.product_id === product.id &&
               target.channel_id === channel.id &&
               target.creative_type === creativeType.trim() &&
+              target.promotion_goal === promotionGoal &&
               target.effective_date === effectiveDate
             ));
             if (existingTarget) {
@@ -299,6 +330,7 @@ export async function POST(request: Request) {
                 is_running: true,
                 product_id: product.id,
                 creative_type: creativeType.trim(),
+                promotion_goal: promotionGoal,
                 target_cpa: targetCpa,
                 target_retention_day1: targetDay1,
                 target_retention_day7: targetDay7,
@@ -313,6 +345,7 @@ export async function POST(request: Request) {
                 product_id: product.id,
                 channel_id: channel.id,
                 creative_type: creativeType.trim(),
+                promotion_goal: promotionGoal,
                 effective_date: effectiveDate,
                 is_running: true,
                 target_cpa: targetCpa,
@@ -331,7 +364,8 @@ export async function POST(request: Request) {
             record.product_id === product.id &&
             record.channel_id === channel.id &&
             record.record_date === recordDate &&
-            record.creative_type === creativeType.trim()
+            record.creative_type === creativeType.trim() &&
+            record.promotion_goal === promotionGoal
           ));
           const recordPayload = {
             agent_id: agent.id,
@@ -339,6 +373,7 @@ export async function POST(request: Request) {
             channel_id: channel.id,
             record_date: recordDate,
             creative_type: creativeType.trim(),
+            promotion_goal: promotionGoal,
             cost: normalizeNumber(row.cost) || 0,
             activations: normalizeNumber(row.activations) || 0,
             cpa: (normalizeNumber(row.activations) || 0) > 0 ? Number(((normalizeNumber(row.cost) || 0) / (normalizeNumber(row.activations) || 1)).toFixed(2)) : null,
@@ -388,15 +423,16 @@ export async function POST(request: Request) {
         const channelName = row.channel_name;
         const agentName = row.agent_name;
         const creativeType = row.creative_type;
+        const promotionGoal = normalizeDictionaryName(row.promotion_goal) || DEFAULT_PROMOTION_GOAL;
 
-        if (!recordDate || !channelName || !agentName || !creativeType) {
-          errors.push(`第 ${index + 2} 行缺少 日期/渠道/代理商/体裁`);
+        if (!recordDate || !channelName || !agentName || !creativeType || !promotionGoal) {
+          errors.push(`第 ${index + 2} 行缺少 日期/渠道/代理商/体裁/投放目标`);
           continue;
         }
 
         const product = await getOrCreateProduct(supabase, productName);
         const channel = await getOrCreateChannel(supabase, channelName);
-        const agent = await getOrCreateAgent(supabase, product.id, channel.id, channel.name, agentName, creativeType, createdCredentials);
+        const agent = await getOrCreateAgent(supabase, product.id, channel.id, channel.name, agentName, creativeType, promotionGoal, createdCredentials);
 
         const targetCpa = normalizeNumber(row.target_cpa);
         const targetDay1 = normalizeNumber(row.target_retention_day1);
@@ -409,6 +445,7 @@ export async function POST(request: Request) {
               product_id: product.id,
               channel_id: channel.id,
               creative_type: creativeType.trim(),
+              promotion_goal: promotionGoal,
               effective_date: dayjs(recordDate).subtract(30, 'day').format('YYYY-MM-DD'),
               is_running: true,
               target_cpa: targetCpa,
@@ -416,7 +453,7 @@ export async function POST(request: Request) {
               target_retention_day7: targetDay7,
               note: '历史 CSV 导入自动生成',
             }, {
-              onConflict: 'product_id,agent_id,channel_id,creative_type,effective_date',
+              onConflict: 'product_id,agent_id,channel_id,creative_type,promotion_goal,effective_date',
             });
         }
 
@@ -428,6 +465,7 @@ export async function POST(request: Request) {
             channel_id: channel.id,
             record_date: recordDate,
             creative_type: creativeType.trim(),
+            promotion_goal: promotionGoal,
             cost: normalizeNumber(row.cost) || 0,
             activations: normalizeNumber(row.activations) || 0,
             cpa: (normalizeNumber(row.activations) || 0) > 0 ? Number(((normalizeNumber(row.cost) || 0) / (normalizeNumber(row.activations) || 1)).toFixed(2)) : null,
@@ -438,7 +476,7 @@ export async function POST(request: Request) {
             retention_day7: normalizeNumber(row.retention_day7),
             created_by: row.created_by?.trim() || 'admin_import',
           }, {
-            onConflict: 'product_id,agent_id,channel_id,record_date,creative_type',
+            onConflict: 'product_id,agent_id,channel_id,record_date,creative_type,promotion_goal',
           })
           .select('id')
           .single();

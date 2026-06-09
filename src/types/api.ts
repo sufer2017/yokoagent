@@ -41,6 +41,7 @@ export interface BatchRecordRequest {
     channel_id?: string;
     record_date: string;
     creative_type: string;
+    promotion_goal: string;
     cost: number;
     activations: number;
     cpa?: number | null;

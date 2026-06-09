@@ -15,6 +15,7 @@ interface DashboardRecord {
   channel_name: string;
   agent_name: string;
   creative_type: string;
+  promotion_goal: string;
   cost: number;
   activations: number;
   cpa: number;
@@ -141,6 +142,7 @@ export async function GET(request: NextRequest) {
         channel_name: db.channels.find((channel) => channel.id === record.channel_id)?.name || '',
         agent_name: db.agents.find((agent) => agent.id === record.agent_id)?.name || '',
         creative_type: record.creative_type,
+        promotion_goal: record.promotion_goal,
         cost: toNumber(record.cost),
         activations: toNumber(record.activations),
         cpa: toNumber(record.cpa),
@@ -213,7 +215,7 @@ export async function GET(request: NextRequest) {
         .order('effective_date', { ascending: false }),
       supabase
         .from('daily_records')
-        .select('id, agent_id, channel_id, record_date, creative_type, cost, activations, cpa, ctr, cvr, cpm, retention_day1, retention_day7, agents(name), channels(name)')
+        .select('id, agent_id, channel_id, record_date, creative_type, promotion_goal, cost, activations, cpa, ctr, cvr, cpm, retention_day1, retention_day7, agents(name), channels(name)')
         .eq('record_date', focusDate),
       supabase
         .from('alert_results')
@@ -268,6 +270,7 @@ export async function GET(request: NextRequest) {
       channel_name: relationName(row.channels),
       agent_name: relationName(row.agents),
       creative_type: String(row.creative_type || ''),
+      promotion_goal: String(row.promotion_goal || ''),
       cost: toNumber(row.cost),
       activations: toNumber(row.activations),
       cpa: toNumber(row.cpa),

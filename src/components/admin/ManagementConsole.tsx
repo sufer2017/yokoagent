@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  AutoComplete,
   Button,
   Card,
   Form,
@@ -20,14 +21,14 @@ import {
 } from 'antd';
 import { DeleteOutlined, DownloadOutlined, EditOutlined, PlusOutlined, ReloadOutlined, UploadOutlined } from '@ant-design/icons';
 import type { UploadProps } from 'antd';
-import type { Agent, Channel, Product } from '@/types/database';
+import type { Agent, Channel, CreativeTypeItem, Product, PromotionGoalItem } from '@/types/database';
 import { DEMO_AGENT_CREDENTIALS, generateAgentPassword } from '@/lib/admin/passwords';
 import { useResizableColumns } from '@/components/common/useResizableColumns';
-import { normalizeCreativeTypes } from '@/lib/admin/creativeTypes';
+import { DEFAULT_PROMOTION_GOAL, normalizeAuthorizedScopes, normalizeCreativeTypes } from '@/lib/admin/creativeTypes';
 
 const { Title, Paragraph, Text } = Typography;
 
-type ActiveTab = 'agents' | 'channels' | 'products';
+type ActiveTab = 'agents' | 'channels' | 'products' | 'creativeTypes' | 'promotionGoals';
 
 function isDemoAgent(agent: Agent) {
   return agent.name.startsWith('演示-') || DEMO_AGENT_CREDENTIALS.some((item) => item.username === agent.username);
@@ -38,6 +39,10 @@ export default function ManagementConsole() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [channels, setChannels] = useState<Channel[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
+  const [creativeTypeItems, setCreativeTypeItems] = useState<CreativeTypeItem[]>([]);
+  const [promotionGoalItems, setPromotionGoalItems] = useState<PromotionGoalItem[]>([]);
+  const [newCreativeTypeName, setNewCreativeTypeName] = useState('');
+  const [newPromotionGoalName, setNewPromotionGoalName] = useState('');
   const [loading, setLoading] = useState(true);
   const [agentModalOpen, setAgentModalOpen] = useState(false);
   const [channelModalOpen, setChannelModalOpen] = useState(false);
@@ -52,17 +57,23 @@ export default function ManagementConsole() {
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      const [agentRes, channelRes, productRes] = await Promise.all([
+      const [agentRes, channelRes, productRes, creativeTypeRes, promotionGoalRes] = await Promise.all([
         fetch('/api/agents?active=false').then((res) => res.json()),
         fetch('/api/channels?active=false').then((res) => res.json()),
         fetch('/api/products?active=false').then((res) => res.json()),
+        fetch('/api/creative-types?active=false').then((res) => res.json()),
+        fetch('/api/promotion-goals?active=false').then((res) => res.json()),
       ]);
       if (!agentRes.success) throw new Error(agentRes.error || '代理加载失败');
       if (!channelRes.success) throw new Error(channelRes.error || '渠道加载失败');
       if (!productRes.success) throw new Error(productRes.error || '产品加载失败');
+      if (!creativeTypeRes.success) throw new Error(creativeTypeRes.error || '体裁名单加载失败');
+      if (!promotionGoalRes.success) throw new Error(promotionGoalRes.error || '投放目标加载失败');
       setAgents(agentRes.data || []);
       setChannels(channelRes.data || []);
       setProducts(productRes.data || []);
+      setCreativeTypeItems(creativeTypeRes.data || []);
+      setPromotionGoalItems(promotionGoalRes.data || []);
     } catch (error) {
       messageApi.error(error instanceof Error ? error.message : '加载失败');
     } finally {
@@ -75,23 +86,23 @@ export default function ManagementConsole() {
   }, [fetchData]);
 
   const creativeTypeOptions = useMemo(() => (
-    normalizeCreativeTypes([
-      '短剧',
-      '小游戏',
-      '小说',
-      '工具',
-      ...agents.flatMap((agent) => agent.creative_types || []),
-    ])
+    normalizeCreativeTypes(creativeTypeItems.filter((item) => item.is_active).map((item) => item.name))
       .sort((left, right) => left.localeCompare(right, 'zh-Hans-CN'))
       .map((value) => ({ value, label: value }))
-  ), [agents]);
+  ), [creativeTypeItems]);
+
+  const promotionGoalOptions = useMemo(() => (
+    normalizeCreativeTypes(promotionGoalItems.filter((item) => item.is_active).map((item) => item.name))
+      .sort((left, right) => left.localeCompare(right, 'zh-Hans-CN'))
+      .map((value) => ({ value, label: value }))
+  ), [promotionGoalItems]);
 
   const openAgentModal = (agent?: Agent) => {
     setEditingAgent(agent || null);
     agentForm.setFieldsValue(agent ? {
       name: agent.name,
       username: agent.username,
-      creative_types: normalizeCreativeTypes(agent.creative_types),
+      authorized_scopes: normalizeAuthorizedScopes(agent.authorized_scopes, agent.creative_types),
       feishu_webhook: agent.feishu_webhook || '',
       product_id: agent.product_id,
       channel_id: agent.channel_id,
@@ -99,7 +110,7 @@ export default function ManagementConsole() {
       password: '',
     } : {
       is_active: true,
-      creative_types: [],
+      authorized_scopes: [{ creative_type: '', promotion_goal: DEFAULT_PROMOTION_GOAL }],
       password: generateAgentPassword(),
     });
     setAgentModalOpen(true);
@@ -214,6 +225,42 @@ export default function ManagementConsole() {
     }
   };
 
+  const addDictionaryItem = async (kind: 'creative' | 'goal') => {
+    const name = (kind === 'creative' ? newCreativeTypeName : newPromotionGoalName).trim();
+    if (!name) {
+      messageApi.warning(kind === 'creative' ? '请输入体裁名称' : '请输入投放目标名称');
+      return;
+    }
+    const response = await fetch(kind === 'creative' ? '/api/creative-types' : '/api/promotion-goals', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+    const payload = await response.json();
+    if (payload.success) {
+      messageApi.success(kind === 'creative' ? '体裁已保存' : '投放目标已保存');
+      if (kind === 'creative') setNewCreativeTypeName('');
+      else setNewPromotionGoalName('');
+      fetchData();
+    } else {
+      messageApi.error(payload.error || '保存失败');
+    }
+  };
+
+  const updateDictionaryActive = async (kind: 'creative' | 'goal', id: string, isActive: boolean) => {
+    const response = await fetch(`${kind === 'creative' ? '/api/creative-types' : '/api/promotion-goals'}/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ is_active: isActive }),
+    });
+    const payload = await response.json();
+    if (payload.success) {
+      fetchData();
+    } else {
+      messageApi.error(payload.error || '更新失败');
+    }
+  };
+
   const importProps: UploadProps = {
     maxCount: 1,
     showUploadList: false,
@@ -285,6 +332,20 @@ export default function ManagementConsole() {
         return creativeTypes.length > 0 ? (
           <Space size={[4, 4]} wrap>
             {creativeTypes.map((item) => <Tag color="purple" key={item}>{item}</Tag>)}
+          </Space>
+        ) : <Text type="secondary">未配置</Text>;
+      },
+    },
+    {
+      title: '投放目标',
+      dataIndex: 'authorized_scopes',
+      key: 'promotion_goals',
+      width: 190,
+      render: (_: unknown, record: Agent) => {
+        const goals = normalizeCreativeTypes((record.authorized_scopes || []).filter((scope) => scope.is_active).map((scope) => scope.promotion_goal));
+        return goals.length > 0 ? (
+          <Space size={[4, 4]} wrap>
+            {goals.map((item) => <Tag color="geekblue" key={item}>{item}</Tag>)}
           </Space>
         ) : <Text type="secondary">未配置</Text>;
       },
@@ -406,6 +467,28 @@ export default function ManagementConsole() {
       render: () => <Text type="secondary">渠道停用后不会出现在新代理账号和填报筛选里。</Text>,
     },
   ];
+  const dictionaryColumns = (kind: 'creative' | 'goal') => [
+    {
+      title: kind === 'creative' ? '体裁' : '投放目标',
+      dataIndex: 'name',
+      key: 'name',
+      render: (value: string) => <Text strong>{value}</Text>,
+    },
+    {
+      title: '状态',
+      dataIndex: 'is_active',
+      key: 'is_active',
+      width: 120,
+      render: (value: boolean, record: CreativeTypeItem | PromotionGoalItem) => (
+        <Switch
+          checked={value}
+          checkedChildren="启用"
+          unCheckedChildren="停用"
+          onChange={(checked) => updateDictionaryActive(kind, record.id, checked)}
+        />
+      ),
+    },
+  ];
   const resizableAgentColumns = useResizableColumns('admin-management-agents-columns', agentColumns);
   const resizableChannelColumns = useResizableColumns('admin-management-channels-columns', channelColumns);
   const resizableProductColumns = useResizableColumns('admin-management-products-columns', productColumns);
@@ -418,7 +501,7 @@ export default function ManagementConsole() {
           <Tag color="cyan">账号与渠道</Tag>
           <Title level={2} style={{ marginTop: 12, marginBottom: 8 }}>公司级代理账号管理</Title>
           <Paragraph className="hero-text">
-            每个外部代理公司一个账号，账号绑定唯一产品、渠道、代理商名称和可填报体裁。代理登录后无法切换归属。
+            每个外部代理公司一个账号，账号绑定唯一产品、渠道、代理商名称和可填报体裁/投放目标组合。代理登录后无法切换归属。
           </Paragraph>
         </Card>
 
@@ -431,6 +514,8 @@ export default function ManagementConsole() {
                 { key: 'agents', label: '代理账号' },
                 { key: 'channels', label: '渠道' },
                 { key: 'products', label: '产品' },
+                { key: 'creativeTypes', label: '体裁名单' },
+                { key: 'promotionGoals', label: '投放目标名单' },
               ]}
             />
             <Space>
@@ -443,11 +528,26 @@ export default function ManagementConsole() {
                 <Button type="primary" icon={<PlusOutlined />} onClick={() => openAgentModal()}>新增代理账号</Button>
               ) : activeTab === 'products' ? (
                 <Button type="primary" icon={<PlusOutlined />} onClick={() => setProductModalOpen(true)}>新增产品</Button>
-              ) : (
+              ) : activeTab === 'channels' ? (
                 <Button type="primary" icon={<PlusOutlined />} onClick={() => setChannelModalOpen(true)}>新增渠道</Button>
-              )}
+              ) : null}
             </Space>
           </div>
+          {activeTab === 'creativeTypes' || activeTab === 'promotionGoals' ? (
+            <Space.Compact style={{ width: 420, marginTop: 12 }}>
+              <Input
+                value={activeTab === 'creativeTypes' ? newCreativeTypeName : newPromotionGoalName}
+                placeholder={activeTab === 'creativeTypes' ? '新增体裁' : '新增投放目标'}
+                onChange={(event) => activeTab === 'creativeTypes'
+                  ? setNewCreativeTypeName(event.target.value)
+                  : setNewPromotionGoalName(event.target.value)}
+                onPressEnter={() => addDictionaryItem(activeTab === 'creativeTypes' ? 'creative' : 'goal')}
+              />
+              <Button type="primary" icon={<PlusOutlined />} onClick={() => addDictionaryItem(activeTab === 'creativeTypes' ? 'creative' : 'goal')}>
+                新增
+              </Button>
+            </Space.Compact>
+          ) : null}
         </Card>
 
         <Card className="section-card">
@@ -458,7 +558,7 @@ export default function ManagementConsole() {
               dataSource={agents}
               columns={resizableAgentColumns}
               pagination={false}
-              scroll={{ x: 1500 }}
+              scroll={{ x: 1680 }}
               tableLayout="fixed"
             />
           ) : activeTab === 'products' ? (
@@ -469,12 +569,28 @@ export default function ManagementConsole() {
               columns={resizableProductColumns}
               pagination={false}
             />
-          ) : (
+          ) : activeTab === 'channels' ? (
             <Table<Channel>
               rowKey="id"
               loading={loading}
               dataSource={channels}
               columns={resizableChannelColumns}
+              pagination={false}
+            />
+          ) : activeTab === 'creativeTypes' ? (
+            <Table<CreativeTypeItem>
+              rowKey="id"
+              loading={loading}
+              dataSource={creativeTypeItems}
+              columns={dictionaryColumns('creative')}
+              pagination={false}
+            />
+          ) : (
+            <Table<PromotionGoalItem>
+              rowKey="id"
+              loading={loading}
+              dataSource={promotionGoalItems}
+              columns={dictionaryColumns('goal')}
               pagination={false}
             />
           )}
@@ -498,19 +614,61 @@ export default function ManagementConsole() {
           <Form.Item name="name" label="代理商名称" rules={[{ required: true, message: '请输入代理商名称' }]}>
             <Input />
           </Form.Item>
-          <Form.Item
-            name="creative_types"
-            label="体裁"
-            rules={[{ required: true, message: '请至少填写一个体裁' }]}
+          <Form.List
+            name="authorized_scopes"
+            rules={[{
+              validator: async (_, value) => {
+                if (!value || value.length === 0) throw new Error('请至少配置一个体裁和投放目标组合');
+              },
+            }]}
           >
-            <Select
-              mode="tags"
-              placeholder="选择或输入体裁"
-              tokenSeparators={['、', ',', '，', '/', '|', ';', '；']}
-              options={creativeTypeOptions}
-              maxTagCount="responsive"
-            />
-          </Form.Item>
+            {(fields, { add, remove }, { errors }) => (
+              <Form.Item label="体裁与投放目标">
+                <div className="compact-list">
+                  {fields.map((field) => {
+                    const { key, ...restField } = field;
+                    return (
+                      <Space key={key} align="baseline" wrap>
+                        <Form.Item
+                          {...restField}
+                          name={[field.name, 'creative_type']}
+                          rules={[{ required: true, message: '请选择或输入体裁' }]}
+                          style={{ marginBottom: 0 }}
+                        >
+                          <AutoComplete
+                            placeholder="体裁"
+                            options={creativeTypeOptions}
+                            style={{ width: 180 }}
+                            filterOption={(input, option) => String(option?.label || '').includes(input)}
+                          />
+                        </Form.Item>
+                        <Form.Item
+                          {...restField}
+                          name={[field.name, 'promotion_goal']}
+                          rules={[{ required: true, message: '请选择或输入投放目标' }]}
+                          style={{ marginBottom: 0 }}
+                        >
+                          <AutoComplete
+                            placeholder="投放目标"
+                            options={promotionGoalOptions}
+                            style={{ width: 180 }}
+                            filterOption={(input, option) => String(option?.label || '').includes(input)}
+                          />
+                        </Form.Item>
+                        {fields.length > 1 && (
+                          <Button danger type="text" icon={<DeleteOutlined />} onClick={() => remove(field.name)} />
+                        )}
+                      </Space>
+                    );
+                  })}
+                  <Button type="dashed" icon={<PlusOutlined />} onClick={() => add({ creative_type: '', promotion_goal: DEFAULT_PROMOTION_GOAL })}>
+                    新增组合
+                  </Button>
+                  <Form.ErrorList errors={errors} />
+                </div>
+              </Form.Item>
+            )}
+          </Form.List>
           <Form.Item name="username" label="登录账号" rules={[{ required: true, message: '请输入登录账号' }]}>
             <Input />
           </Form.Item>

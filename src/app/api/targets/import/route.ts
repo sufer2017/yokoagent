@@ -4,7 +4,9 @@ import { getSession } from '@/lib/auth/session';
 import { isYmdDate, missingHeaders, normalizeNumber, parseBoolean, parseCsv } from '@/lib/admin/csv';
 import { recalculateAlertsForRecordIds } from '@/lib/alerts/engine';
 import { pruneSupabaseBusinessData } from '@/lib/admin/retention';
-import { decorateTarget, mutateLocalDb, newId, nowIso, recalculateLocalAlertsForRecordIds } from '@/lib/local-db/store';
+import { DEFAULT_PROMOTION_GOAL, normalizeDictionaryName } from '@/lib/admin/creativeTypes';
+import { decorateTarget, isLocalScopeAuthorized, mutateLocalDb, newId, nowIso, recalculateLocalAlertsForRecordIds } from '@/lib/local-db/store';
+import { isSupabaseScopeAuthorized } from '@/lib/admin/scopes';
 
 const HEADER_ALIASES: Record<string, string> = {
   产品: 'product_name',
@@ -13,6 +15,7 @@ const HEADER_ALIASES: Record<string, string> = {
   代理商名称: 'agent_name',
   代理商: 'agent_name',
   体裁: 'creative_type',
+  投放目标: 'promotion_goal',
   是否在投: 'is_running',
   考核生效日期: 'effective_date',
   考核CPA: 'target_cpa',
@@ -28,6 +31,7 @@ const REQUIRED_HEADERS = [
   'channel_name',
   'agent_name',
   'creative_type',
+  'promotion_goal',
   'is_running',
   'effective_date',
   'target_cpa',
@@ -75,12 +79,13 @@ export async function POST(request: Request) {
           const channelName = row.channel_name?.trim();
           const agentName = row.agent_name?.trim();
           const creativeType = row.creative_type?.trim();
+          const promotionGoal = normalizeDictionaryName(row.promotion_goal) || DEFAULT_PROMOTION_GOAL;
           const effectiveDate = row.effective_date?.trim();
           const running = parseBoolean(row.is_running, true);
-          const key = `${productName}:${channelName}:${agentName}:${creativeType}:${effectiveDate}`;
+          const key = `${productName}:${channelName}:${agentName}:${creativeType}:${promotionGoal}:${effectiveDate}`;
 
-          if (!productName || !channelName || !agentName || !creativeType || !effectiveDate) {
-            errors.push(`第 ${line} 行缺少 产品/渠道/代理商名称/体裁/考核生效日期`);
+          if (!productName || !channelName || !agentName || !creativeType || !promotionGoal || !effectiveDate) {
+            errors.push(`第 ${line} 行缺少 产品/渠道/代理商名称/体裁/投放目标/考核生效日期`);
             continue;
           }
           if (!isYmdDate(effectiveDate)) {
@@ -104,12 +109,17 @@ export async function POST(request: Request) {
             errors.push(`第 ${line} 行未知代理: ${productName}/${channelName}/${agentName}`);
             continue;
           }
+          if (!isLocalScopeAuthorized(db, agent.id, creativeType, promotionGoal)) {
+            errors.push(`第 ${line} 行代理未授权组合: ${agentName}/${creativeType}/${promotionGoal}`);
+            continue;
+          }
 
           const payload = {
             agent_id: agent.id,
             product_id: product.id,
             channel_id: channel.id,
             creative_type: creativeType,
+            promotion_goal: promotionGoal,
             effective_date: effectiveDate,
             is_running: running,
             target_cpa: normalizeNumber(row.target_cpa),
@@ -125,6 +135,7 @@ export async function POST(request: Request) {
             target.product_id === product.id &&
             target.channel_id === channel.id &&
             target.creative_type === creativeType &&
+            target.promotion_goal === promotionGoal &&
             target.effective_date === effectiveDate
           ));
 
@@ -138,7 +149,7 @@ export async function POST(request: Request) {
             });
           }
           affectedRecordIds.push(...db.daily_records
-            .filter((record) => record.agent_id === agent.id && record.product_id === product.id && record.channel_id === channel.id && record.creative_type === creativeType && record.record_date >= effectiveDate)
+            .filter((record) => record.agent_id === agent.id && record.product_id === product.id && record.channel_id === channel.id && record.creative_type === creativeType && record.promotion_goal === promotionGoal && record.record_date >= effectiveDate)
             .map((record) => record.id));
           imported += 1;
         }
@@ -171,12 +182,13 @@ export async function POST(request: Request) {
         const channelName = row.channel_name?.trim();
         const agentName = row.agent_name?.trim();
         const creativeType = row.creative_type?.trim();
+        const promotionGoal = normalizeDictionaryName(row.promotion_goal) || DEFAULT_PROMOTION_GOAL;
         const effectiveDate = row.effective_date?.trim();
         const running = parseBoolean(row.is_running, true);
-        const key = `${productName}:${channelName}:${agentName}:${creativeType}:${effectiveDate}`;
+        const key = `${productName}:${channelName}:${agentName}:${creativeType}:${promotionGoal}:${effectiveDate}`;
 
-        if (!productName || !channelName || !agentName || !creativeType || !effectiveDate) {
-          errors.push(`第 ${line} 行缺少 产品/渠道/代理商名称/体裁/考核生效日期`);
+        if (!productName || !channelName || !agentName || !creativeType || !promotionGoal || !effectiveDate) {
+          errors.push(`第 ${line} 行缺少 产品/渠道/代理商名称/体裁/投放目标/考核生效日期`);
           continue;
         }
         if (!isYmdDate(effectiveDate)) {
@@ -215,6 +227,11 @@ export async function POST(request: Request) {
           errors.push(`第 ${line} 行未知代理: ${productName}/${channelName}/${agentName}`);
           continue;
         }
+        const authorized = await isSupabaseScopeAuthorized(supabase, agent.id, creativeType, promotionGoal);
+        if (!authorized) {
+          errors.push(`第 ${line} 行代理未授权组合: ${agentName}/${creativeType}/${promotionGoal}`);
+          continue;
+        }
 
         const { error } = await supabase
           .from('target_changes')
@@ -223,6 +240,7 @@ export async function POST(request: Request) {
             product_id: product.id,
             channel_id: channel.id,
             creative_type: creativeType,
+            promotion_goal: promotionGoal,
             effective_date: effectiveDate,
             is_running: running,
             target_cpa: normalizeNumber(row.target_cpa),
@@ -230,7 +248,7 @@ export async function POST(request: Request) {
             target_retention_day7: normalizeNumber(row.target_retention_day7),
             activation_cap: normalizeNumber(row.activation_cap),
             note: row.note?.trim() || null,
-          }, { onConflict: 'product_id,agent_id,channel_id,creative_type,effective_date' });
+          }, { onConflict: 'product_id,agent_id,channel_id,creative_type,promotion_goal,effective_date' });
 
         if (error) throw error;
         const { data: affectedRecords, error: recordsError } = await supabase
@@ -240,6 +258,7 @@ export async function POST(request: Request) {
           .eq('product_id', product.id)
           .eq('channel_id', channel.id)
           .eq('creative_type', creativeType)
+          .eq('promotion_goal', promotionGoal)
           .gte('record_date', effectiveDate);
         if (recordsError) throw recordsError;
         affectedRecordIds.push(...(affectedRecords || []).map((record: { id: string }) => record.id));

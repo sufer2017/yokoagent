@@ -9,6 +9,7 @@ export interface Agent {
   name: string;
   username: string;
   creative_types: string[];
+  authorized_scopes?: AgentAuthorizedScope[];
   feishu_webhook?: string | null;
   password_hash?: string;
   password_plaintext?: string | null;
@@ -17,6 +18,27 @@ export interface Agent {
   updated_at: string;
   product_name?: string;
   channel_name?: string;
+}
+
+export interface DictionaryItem {
+  id: string;
+  name: string;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export type CreativeTypeItem = DictionaryItem;
+export type PromotionGoalItem = DictionaryItem;
+
+export interface AgentAuthorizedScope {
+  id: string;
+  agent_id: string;
+  creative_type: string;
+  promotion_goal: string;
+  is_active: boolean;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface Product {
@@ -50,6 +72,7 @@ export interface DailyRecord {
   record_date: string;
   channel_id: string;
   creative_type: string;
+  promotion_goal: string;
   cost: number;
   activations: number;
   cpa: number | null;
@@ -84,6 +107,7 @@ export interface TargetChange {
   product_id: string;
   channel_id: string;
   creative_type: string;
+  promotion_goal: string;
   is_running: boolean;
   effective_date: string;
   target_cpa: number | null;
@@ -117,6 +141,7 @@ export interface AlertResult {
   product_id: string;
   channel_id: string;
   creative_type: string;
+  promotion_goal: string;
   cost_dod: number | null;
   activations_dod: number | null;
   cpa_dod: number | null;

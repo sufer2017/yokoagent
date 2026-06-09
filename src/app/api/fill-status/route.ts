@@ -9,7 +9,7 @@ import {
   listDates,
 } from '@/lib/admin/metrics';
 import { readLocalDb } from '@/lib/local-db/store';
-import { normalizeCreativeTypes } from '@/lib/admin/creativeTypes';
+import { DEFAULT_PROMOTION_GOAL, normalizeAuthorizedScopes, normalizeCreativeTypes } from '@/lib/admin/creativeTypes';
 
 type FillStatus = 'missing' | 'pending' | 'late' | 'on_time' | 'not_required';
 
@@ -30,6 +30,7 @@ interface FillRecord {
   product_id: string;
   channel_id: string;
   creative_type: string;
+  promotion_goal: string;
   record_date: string;
   created_by: string | null;
   created_at: string;
@@ -41,6 +42,7 @@ interface TargetRow {
   product_id: string;
   channel_id: string;
   creative_type?: string;
+  promotion_goal?: string;
   effective_date: string;
   is_running: boolean;
 }
@@ -55,6 +57,7 @@ interface DetailRow {
   channel_id: string;
   channel_name: string;
   creative_type: string;
+  promotion_goal: string;
   expected: boolean;
   filled: boolean;
   status: FillStatus;
@@ -86,6 +89,7 @@ function latestTargetForCreative(
   agentId: string,
   channelId: string,
   creativeType: string,
+  promotionGoal: string,
   date: string
 ) {
   let latest: TargetRow | null = null;
@@ -95,6 +99,7 @@ function latestTargetForCreative(
       target.agent_id !== agentId ||
       target.channel_id !== channelId ||
       target.creative_type !== creativeType ||
+      target.promotion_goal !== promotionGoal ||
       target.effective_date > date
     ) {
       continue;
@@ -106,19 +111,22 @@ function latestTargetForCreative(
   return latest;
 }
 
-function isExpectedCreativeDay(targets: TargetRow[], productId: string, agentId: string, channelId: string, creativeType: string, date: string) {
-  return latestTargetForCreative(targets, productId, agentId, channelId, creativeType, date)?.is_running === true;
+function isExpectedCreativeDay(targets: TargetRow[], productId: string, agentId: string, channelId: string, creativeType: string, promotionGoal: string, date: string) {
+  return latestTargetForCreative(targets, productId, agentId, channelId, creativeType, promotionGoal, date)?.is_running === true;
 }
 
-function creativeTypesForAgent(agent: FillAgent, targets: TargetRow[], records: FillRecord[]) {
-  return normalizeCreativeTypes([
-    ...agent.creative_types,
+function scopesForAgent(agent: FillAgent, targets: TargetRow[], records: FillRecord[]) {
+  return normalizeAuthorizedScopes([
+    ...normalizeCreativeTypes(agent.creative_types).map((creativeType) => ({
+      creative_type: creativeType,
+      promotion_goal: DEFAULT_PROMOTION_GOAL,
+    })),
     ...targets
       .filter((target) => target.product_id === agent.product_id && target.agent_id === agent.id && target.channel_id === agent.channel_id)
-      .map((target) => target.creative_type || ''),
+      .map((target) => ({ creative_type: target.creative_type || '', promotion_goal: target.promotion_goal || DEFAULT_PROMOTION_GOAL })),
     ...records
       .filter((record) => record.product_id === agent.product_id && record.agent_id === agent.id && record.channel_id === agent.channel_id)
-      .map((record) => record.creative_type || ''),
+      .map((record) => ({ creative_type: record.creative_type || '', promotion_goal: record.promotion_goal || DEFAULT_PROMOTION_GOAL })),
   ]);
 }
 
@@ -149,12 +157,13 @@ function clampDateRange(searchParams: URLSearchParams) {
   return { dateFrom, dateTo, dates: listDates(dateTo, days) };
 }
 
-function buildStatusForDate(agent: FillAgent, creativeType: string, date: string, records: FillRecord[], isExpected: boolean, now: Date): DetailRow {
+function buildStatusForDate(agent: FillAgent, creativeType: string, promotionGoal: string, date: string, records: FillRecord[], isExpected: boolean, now: Date): DetailRow {
   const dayRecords = records.filter((record) => (
     record.agent_id === agent.id &&
     record.product_id === agent.product_id &&
     record.channel_id === agent.channel_id &&
     record.creative_type === creativeType &&
+    record.promotion_goal === promotionGoal &&
     record.record_date === date
   ));
   const firstFilledAt = minIso(dayRecords.map((record) => record.created_at));
@@ -169,7 +178,7 @@ function buildStatusForDate(agent: FillAgent, creativeType: string, date: string
       : deadlinePassed ? 'missing' : 'pending';
 
   return {
-    id: `${date}:${agent.id}:${creativeType}`,
+    id: `${date}:${agent.id}:${creativeType}:${promotionGoal}`,
     date,
     agent_id: agent.id,
     agent_name: agent.name,
@@ -178,6 +187,7 @@ function buildStatusForDate(agent: FillAgent, creativeType: string, date: string
     channel_id: agent.channel_id,
     channel_name: agent.channel_name,
     creative_type: creativeType,
+    promotion_goal: promotionGoal,
     expected: isExpected,
     filled,
     status,
@@ -198,6 +208,7 @@ function applyFilters(
     productIds: string[];
     agentIds: string[];
     statuses: FillStatus[];
+    promotionGoals: string[];
     filledBy: string;
   }
 ) {
@@ -206,6 +217,7 @@ function applyFilters(
     .filter((row) => filters.channelIds.length === 0 || filters.channelIds.includes(row.channel_id))
     .filter((row) => filters.productIds.length === 0 || filters.productIds.includes(row.product_id))
     .filter((row) => filters.agentIds.length === 0 || filters.agentIds.includes(row.agent_id))
+    .filter((row) => filters.promotionGoals.length === 0 || filters.promotionGoals.includes(row.promotion_goal))
     .filter((row) => filters.statuses.length === 0 || filters.statuses.includes(row.status))
     .filter((row) => !filledBy || row.filled_by.some((name) => name.toLowerCase().includes(filledBy)));
 }
@@ -217,6 +229,7 @@ function sortRows(rows: DetailRow[]) {
     left.product_name.localeCompare(right.product_name, 'zh-Hans-CN') ||
     left.channel_name.localeCompare(right.channel_name, 'zh-Hans-CN') ||
     left.creative_type.localeCompare(right.creative_type, 'zh-Hans-CN') ||
+    left.promotion_goal.localeCompare(right.promotion_goal, 'zh-Hans-CN') ||
     left.agent_name.localeCompare(right.agent_name, 'zh-Hans-CN')
   ));
 }
@@ -230,6 +243,7 @@ function buildResponse(
     productIds: string[];
     channelIds: string[];
     agentIds: string[];
+    promotionGoals: string[];
     statuses: FillStatus[];
     filledBy: string;
   }
@@ -237,13 +251,14 @@ function buildResponse(
   const now = new Date();
   const expectedRows = agents
     .filter((agent) => agent.is_active)
-    .flatMap((agent) => creativeTypesForAgent(agent, targets, records)
-      .flatMap((creativeType) => dates.map((date) => buildStatusForDate(
+    .flatMap((agent) => scopesForAgent(agent, targets, records)
+      .flatMap((scope) => dates.map((date) => buildStatusForDate(
         agent,
-        creativeType,
+        scope.creative_type,
+        scope.promotion_goal,
         date,
         records,
-        isExpectedCreativeDay(targets, agent.product_id, agent.id, agent.channel_id, creativeType, date),
+        isExpectedCreativeDay(targets, agent.product_id, agent.id, agent.channel_id, scope.creative_type, scope.promotion_goal, date),
         now
       ))))
     .filter((row) => row.expected);
@@ -262,7 +277,7 @@ function buildResponse(
 
   const grouped = new Map<string, DetailRow[]>();
   for (const row of filteredRows) {
-    const key = `${row.agent_id}:${row.creative_type}`;
+    const key = `${row.agent_id}:${row.creative_type}:${row.promotion_goal}`;
     grouped.set(key, [...(grouped.get(key) || []), row]);
   }
 
@@ -275,7 +290,8 @@ function buildResponse(
         channel_id: first.channel_id,
         channel_name: first.channel_name,
         creative_type: first.creative_type,
-        agent_label: `${first.product_name} / ${first.channel_name} / ${first.creative_type} / ${first.agent_name}`,
+        promotion_goal: first.promotion_goal,
+        agent_label: `${first.product_name} / ${first.channel_name} / ${first.creative_type} / ${first.promotion_goal} / ${first.agent_name}`,
         missing_count: rows.filter((row) => row.status === 'missing').length,
         late_filled_count: rows.filter((row) => row.status === 'late').length,
         total_late_count: rows.filter((row) => row.status === 'missing' || row.status === 'late').length,
@@ -318,6 +334,7 @@ function buildResponse(
         )),
       filledBy: Array.from(new Set(expectedRows.flatMap((row) => row.filled_by))).sort((left, right) => left.localeCompare(right, 'zh-Hans-CN')),
       creativeTypes: Array.from(new Set(expectedRows.map((row) => row.creative_type))).sort((left, right) => left.localeCompare(right, 'zh-Hans-CN')),
+      promotionGoals: Array.from(new Set(expectedRows.map((row) => row.promotion_goal))).sort((left, right) => left.localeCompare(right, 'zh-Hans-CN')),
       statuses: [
         { value: 'missing', label: '逾期未填' },
         { value: 'pending', label: '待填' },
@@ -347,6 +364,7 @@ export async function GET(request: NextRequest) {
       productIds: parseList(searchParams, 'productIds', 'productId'),
       channelIds: parseList(searchParams, 'channelIds', 'channelId'),
       agentIds: parseList(searchParams, 'agentIds', 'agentId'),
+      promotionGoals: parseList(searchParams, 'promotionGoals', 'promotionGoal'),
       statuses: parseList(searchParams, 'statuses').filter((status): status is FillStatus => ['missing', 'pending', 'late', 'on_time'].includes(status)),
       filledBy: searchParams.get('filledBy') || '',
     };
@@ -381,6 +399,7 @@ export async function GET(request: NextRequest) {
           product_id: record.product_id,
           channel_id: record.channel_id,
           creative_type: record.creative_type,
+          promotion_goal: record.promotion_goal,
           record_date: record.record_date,
           created_by: record.created_by,
           created_at: record.created_at,
@@ -409,7 +428,7 @@ export async function GET(request: NextRequest) {
 
     let recordsQuery = supabase
         .from('daily_records')
-        .select('id, agent_id, product_id, channel_id, creative_type, record_date, created_by, created_at, updated_at')
+        .select('id, agent_id, product_id, channel_id, creative_type, promotion_goal, record_date, created_by, created_at, updated_at')
         .gte('record_date', dates[0])
         .lte('record_date', dateTo);
     if (session.role === 'agent') {
@@ -418,7 +437,7 @@ export async function GET(request: NextRequest) {
 
     let targetsQuery = supabase
         .from('target_changes')
-        .select('agent_id, product_id, channel_id, creative_type, effective_date, is_running')
+        .select('agent_id, product_id, channel_id, creative_type, promotion_goal, effective_date, is_running')
         .lte('effective_date', dateTo)
         .order('effective_date', { ascending: false });
     if (session.role === 'agent') {
@@ -451,6 +470,7 @@ export async function GET(request: NextRequest) {
       product_id: String(record.product_id),
       channel_id: String(record.channel_id),
       creative_type: String(record.creative_type || ''),
+      promotion_goal: String(record.promotion_goal || DEFAULT_PROMOTION_GOAL),
       record_date: String(record.record_date),
       created_by: record.created_by == null ? null : String(record.created_by),
       created_at: String(record.created_at),

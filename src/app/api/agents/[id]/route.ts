@@ -2,8 +2,9 @@ import { NextResponse } from 'next/server';
 import { createServerSupabase, hasSupabaseConfig } from '@/lib/supabase/server';
 import { getSession } from '@/lib/auth/session';
 import { hashPassword } from '@/lib/auth/password';
-import { cascadeDeleteAgents, decorateAgent, mutateLocalDb, nowIso } from '@/lib/local-db/store';
-import { normalizeCreativeTypes } from '@/lib/admin/creativeTypes';
+import { cascadeDeleteAgents, decorateAgent, mutateLocalDb, nowIso, replaceLocalAgentScopes } from '@/lib/local-db/store';
+import { normalizeAuthorizedScopes } from '@/lib/admin/creativeTypes';
+import { creativeTypesFromScopes, normalizeScopePayload, replaceSupabaseAgentScopes } from '@/lib/admin/scopes';
 
 // PATCH /api/agents/[id]
 export async function PATCH(
@@ -25,12 +26,14 @@ export async function PATCH(
     if (body.feishu_webhook !== undefined) updateData.feishu_webhook = body.feishu_webhook?.trim() || '';
     if (body.product_id !== undefined) updateData.product_id = body.product_id;
     if (body.channel_id !== undefined) updateData.channel_id = body.channel_id;
-    if (Object.prototype.hasOwnProperty.call(body, 'creative_types')) {
-      const creativeTypes = normalizeCreativeTypes(body.creative_types);
-      if (creativeTypes.length === 0) {
-        return NextResponse.json({ success: false, error: '请至少填写一个体裁' }, { status: 400 });
+    const hasScopes = Object.prototype.hasOwnProperty.call(body, 'authorized_scopes')
+      || Object.prototype.hasOwnProperty.call(body, 'creative_types');
+    const authorizedScopes = hasScopes ? normalizeScopePayload(body) : null;
+    if (authorizedScopes) {
+      if (authorizedScopes.length === 0) {
+        return NextResponse.json({ success: false, error: '请至少配置一个体裁和投放目标组合' }, { status: 400 });
       }
-      updateData.creative_types = creativeTypes;
+      updateData.creative_types = creativeTypesFromScopes(authorizedScopes);
     }
     if (body.is_active !== undefined) updateData.is_active = body.is_active;
     const nextPassword = typeof body.password === 'string' ? body.password.trim() : '';
@@ -44,6 +47,9 @@ export async function PATCH(
         const agent = db.agents.find((item) => item.id === id);
         if (!agent) throw new Error('Agent not found');
         Object.assign(agent, updateData, { updated_at: nowIso() });
+        if (authorizedScopes) {
+          replaceLocalAgentScopes(db, id, normalizeAuthorizedScopes(authorizedScopes));
+        }
         return decorateAgent(db, agent);
       });
 
@@ -65,8 +71,11 @@ export async function PATCH(
       }
       throw error;
     }
+    if (authorizedScopes) {
+      await replaceSupabaseAgentScopes(supabase, id, authorizedScopes);
+    }
 
-    return NextResponse.json({ success: true, data });
+    return NextResponse.json({ success: true, data: { ...data, authorized_scopes: authorizedScopes || undefined } });
   } catch (error) {
     console.error('PATCH /api/agents/[id] error:', error);
     return NextResponse.json({ success: false, error: 'Failed to update agent' }, { status: 500 });

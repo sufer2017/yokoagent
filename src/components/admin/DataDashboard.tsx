@@ -35,7 +35,7 @@ const { Title, Paragraph, Text } = Typography;
 
 type MetricKey = 'cost' | 'activations' | 'cpa' | 'retention_day1' | 'retention_day7';
 type Operator = '<' | '<=' | '=' | '>' | '>=';
-type SummaryMode = 'auto' | 'total' | 'date' | 'product' | 'channel' | 'agent' | 'creative';
+type SummaryMode = 'auto' | 'total' | 'date' | 'product' | 'channel' | 'agent' | 'creative' | 'promotion_goal';
 type AggregateMethod = 'auto' | 'sum' | 'avg' | 'max' | 'min';
 
 interface MetricFilter {
@@ -55,6 +55,7 @@ interface DetailRow {
   channel_name: string;
   agent_name: string;
   creative_type: string;
+  promotion_goal: string;
   cost: number;
   cost_dod: number | null;
   activations: number;
@@ -134,6 +135,7 @@ interface AnalyticsData {
     channels: Array<{ id: string; name: string }>;
     agents: Array<{ id: string; name: string; product_id: string; product_name: string; channel_id: string; channel_name: string }>;
     creativeTypes: string[];
+    promotionGoals: string[];
   };
 }
 
@@ -227,7 +229,9 @@ function aggregateRows(rows: DetailRow[], mode: SummaryMode, method: AggregateMe
             ? row.channel_name
             : mode === 'agent'
               ? `${row.product_name}/${row.channel_name}/${row.agent_name}`
-              : row.creative_type;
+              : mode === 'creative'
+                ? row.creative_type
+                : row.promotion_goal;
     groups.set(key, [...(groups.get(key) || []), row]);
   }
 
@@ -246,6 +250,7 @@ function aggregateRows(rows: DetailRow[], mode: SummaryMode, method: AggregateMe
       channel_name: mode === 'channel' ? key : mode === 'agent' ? group[0].channel_name : '',
       agent_name: mode === 'agent' ? group[0].agent_name : '',
       creative_type: mode === 'creative' ? key : '',
+      promotion_goal: mode === 'promotion_goal' ? key : '',
       cost: method === 'auto' || method === 'sum' ? totalCost : aggregate(group.map((row) => row.cost), method) || 0,
       cost_dod: aggregate(group.map((row) => row.cost_dod), auto ? 'avg' : method),
       activations: method === 'auto' || method === 'sum' ? totalActivations : aggregate(group.map((row) => row.activations), method) || 0,
@@ -345,6 +350,7 @@ export default function DataDashboard({
     isAgentScope && fixedAgentId ? [fixedAgentId] : readListParam(searchParams, 'agentIds')
   ));
   const [creativeTypes, setCreativeTypes] = useState<string[]>(() => readListParam(searchParams, 'creativeTypes'));
+  const [promotionGoals, setPromotionGoals] = useState<string[]>(() => readListParam(searchParams, 'promotionGoals'));
   const [metricFilters, setMetricFilters] = useState<MetricFilter[]>([
     { id: 'default:cpa', metric: 'cpa', operator: '>', value: null },
   ]);
@@ -387,6 +393,7 @@ export default function DataDashboard({
 
     setDateRange(readDateRangeParam(searchParams));
     setCreativeTypes(readListParam(searchParams, 'creativeTypes'));
+    setPromotionGoals(readListParam(searchParams, 'promotionGoals'));
 
     if (!isAgentScope) {
       setProductIds(readListParam(searchParams, 'productIds'));
@@ -399,7 +406,7 @@ export default function DataDashboard({
     setTablePagination((current) => (
       current.current === 1 ? current : { ...current, current: 1 }
     ));
-  }, [completeMetricFilters, creativeTypes, dateRange, effectiveAgentIds, effectiveChannelIds, effectiveProductIds]);
+  }, [completeMetricFilters, creativeTypes, dateRange, effectiveAgentIds, effectiveChannelIds, effectiveProductIds, promotionGoals]);
 
   const fetchData = useCallback(async () => {
     const requestSeq = requestSeqRef.current + 1;
@@ -416,6 +423,7 @@ export default function DataDashboard({
       if (effectiveChannelIds.length > 0) params.set('channelIds', effectiveChannelIds.join(','));
       if (effectiveAgentIds.length > 0) params.set('agentIds', effectiveAgentIds.join(','));
       if (creativeTypes.length > 0) params.set('creativeTypes', creativeTypes.join(','));
+      if (promotionGoals.length > 0) params.set('promotionGoals', promotionGoals.join(','));
       if (completeMetricFilters.length > 0) {
         params.set('metricFilters', JSON.stringify(completeMetricFilters.map(({ metric, operator, value }) => ({ metric, operator, value }))));
       }
@@ -433,7 +441,7 @@ export default function DataDashboard({
         setLoading(false);
       }
     }
-  }, [completeMetricFilters, creativeTypes, dateRange, effectiveAgentIds, effectiveChannelIds, effectiveProductIds, messageApi, tablePageCurrent, tablePageSize]);
+  }, [completeMetricFilters, creativeTypes, dateRange, effectiveAgentIds, effectiveChannelIds, effectiveProductIds, messageApi, promotionGoals, tablePageCurrent, tablePageSize]);
 
   useEffect(() => {
     fetchData();
@@ -469,6 +477,10 @@ export default function DataDashboard({
   const creativeTypeOptions = useMemo(
     () => (data?.filterOptions.creativeTypes || []).map((item) => ({ value: item, label: item })),
     [data?.filterOptions.creativeTypes]
+  );
+  const promotionGoalOptions = useMemo(
+    () => (data?.filterOptions.promotionGoals || []).map((item) => ({ value: item, label: item })),
+    [data?.filterOptions.promotionGoals]
   );
   const agentOptions = useMemo(
     () => filteredAgents.map((agent) => ({ value: agent.id, label: `${agent.product_name} / ${agent.channel_name} / ${agent.name}` })),
@@ -597,6 +609,14 @@ export default function DataDashboard({
       render: (value: string) => value || '-',
     },
     {
+      title: '投放目标',
+      dataIndex: 'promotion_goal',
+      key: 'promotion_goal',
+      width: 110,
+      sorter: sortableText('promotion_goal'),
+      render: (value: string) => value || '-',
+    },
+    {
       title: '代理商',
       dataIndex: 'agent_name',
       key: 'agent_name',
@@ -717,6 +737,13 @@ export default function DataDashboard({
                   onChange={(value) => setCreativeTypes(value)}
                   options={creativeTypeOptions}
                 />
+                <MbiMultiSelect
+                  placeholder="投放目标"
+                  value={promotionGoals}
+                  style={{ minWidth: 190 }}
+                  onChange={(value) => setPromotionGoals(value)}
+                  options={promotionGoalOptions}
+                />
                 {!isAgentScope && (
                   <MbiMultiSelect
                     placeholder="代理商"
@@ -834,6 +861,7 @@ export default function DataDashboard({
                   { value: 'channel', label: '按渠道小计' },
                   { value: 'agent', label: '按代理商小计' },
                   { value: 'creative', label: '按体裁小计' },
+                  { value: 'promotion_goal', label: '按投放目标小计' },
                 ]}
               />
               <Select
@@ -867,22 +895,22 @@ export default function DataDashboard({
                 onChange: (current, pageSize) => setTablePagination({ current, pageSize }),
               }}
               locale={{ emptyText: '当前筛选下暂无数据' }}
-              scroll={{ x: 2600 }}
+              scroll={{ x: 2710 }}
               tableLayout="fixed"
               summary={() => summary ? (
                 <Table.Summary fixed>
                   <Table.Summary.Row>
-                    <Table.Summary.Cell index={0} colSpan={5}>
+                    <Table.Summary.Cell index={0} colSpan={6}>
                       <Text strong>总计</Text>
                       <Text type="secondary" style={{ marginLeft: 8 }}>{summary.summaryCount || 0} 行</Text>
                     </Table.Summary.Cell>
-                    <Table.Summary.Cell index={5}><Text strong>{money(summary.cost)}</Text></Table.Summary.Cell>
-                    <Table.Summary.Cell index={6} />
-                    <Table.Summary.Cell index={7}><Text strong>{summary.activations}</Text></Table.Summary.Cell>
-                    <Table.Summary.Cell index={8} />
-                    <Table.Summary.Cell index={9}><Text strong>{numberText(summary.cpa)}</Text></Table.Summary.Cell>
-                    <Table.Summary.Cell index={10} colSpan={18} />
-                    <Table.Summary.Cell index={28}>{redlineTags(summary)}</Table.Summary.Cell>
+                    <Table.Summary.Cell index={6}><Text strong>{money(summary.cost)}</Text></Table.Summary.Cell>
+                    <Table.Summary.Cell index={7} />
+                    <Table.Summary.Cell index={8}><Text strong>{summary.activations}</Text></Table.Summary.Cell>
+                    <Table.Summary.Cell index={9} />
+                    <Table.Summary.Cell index={10}><Text strong>{numberText(summary.cpa)}</Text></Table.Summary.Cell>
+                    <Table.Summary.Cell index={11} colSpan={18} />
+                    <Table.Summary.Cell index={29}>{redlineTags(summary)}</Table.Summary.Cell>
                   </Table.Summary.Row>
                 </Table.Summary>
               ) : undefined}

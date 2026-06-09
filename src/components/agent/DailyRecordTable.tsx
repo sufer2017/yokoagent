@@ -6,10 +6,10 @@ import {
   Button,
   Card,
   DatePicker,
-  Input,
   InputNumber,
   Popconfirm,
   Space,
+  Select,
   Table,
   Tag,
   Typography,
@@ -27,6 +27,7 @@ interface EditableRow {
   id?: string;
   record_date: string;
   creative_type: string;
+  promotion_goal: string;
   cost: number;
   activations: number;
   cpa: number | null;
@@ -41,12 +42,19 @@ interface EditableRow {
   activation_cap?: number | null;
 }
 
+interface AgentScope {
+  creative_type: string;
+  promotion_goal: string;
+  is_active: boolean;
+}
+
 function normalizeRows(rows: Record<string, unknown>[]): EditableRow[] {
   return rows.map((record) => ({
     key: String(record.id),
     id: String(record.id),
     record_date: String(record.record_date),
     creative_type: String(record.creative_type || ''),
+    promotion_goal: String(record.promotion_goal || '拉新'),
     cost: Number(record.cost || 0),
     activations: Number(record.activations || 0),
     cpa: record.cpa == null ? null : Number(record.cpa),
@@ -70,6 +78,7 @@ export default function DailyRecordTable() {
   const [session, setSession] = useState<Session | null>(null);
   const [selectedDate, setSelectedDate] = useState(dayjs().subtract(1, 'day').format('YYYY-MM-DD'));
   const [draftRows, setDraftRows] = useState<EditableRow[]>([]);
+  const [authorizedScopes, setAuthorizedScopes] = useState<AgentScope[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [messageApi, contextHolder] = message.useMessage();
@@ -98,9 +107,21 @@ export default function DailyRecordTable() {
     }
   }, [messageApi, selectedDate]);
 
+  const fetchScopes = useCallback(async () => {
+    try {
+      const response = await fetch('/api/agent-scopes');
+      const payload = await response.json();
+      if (!payload.success) throw new Error(payload.error || '授权组合加载失败');
+      setAuthorizedScopes(payload.data || []);
+    } catch (error) {
+      messageApi.error(error instanceof Error ? error.message : '授权组合加载失败');
+    }
+  }, [messageApi]);
+
   useEffect(() => {
     fetchSession();
-  }, [fetchSession]);
+    fetchScopes();
+  }, [fetchScopes, fetchSession]);
 
   useEffect(() => {
     fetchRecords();
@@ -116,6 +137,7 @@ export default function DailyRecordTable() {
       key: `new-${Date.now()}`,
       record_date: selectedDate,
       creative_type: '',
+      promotion_goal: '',
       cost: 0,
       activations: 0,
       cpa: null,
@@ -132,9 +154,9 @@ export default function DailyRecordTable() {
   };
 
   const handleSave = async () => {
-    const rowsToSave = draftRows.filter((row) => row.creative_type.trim());
+    const rowsToSave = draftRows.filter((row) => row.creative_type.trim() && row.promotion_goal.trim());
     if (rowsToSave.length !== draftRows.length) {
-      messageApi.warning('体裁不能为空，空行不会保存');
+      messageApi.warning('体裁和投放目标不能为空，空行不会保存');
     }
     if (rowsToSave.length === 0) return;
 
@@ -148,6 +170,7 @@ export default function DailyRecordTable() {
             id: row.id,
             record_date: selectedDate,
             creative_type: row.creative_type.trim(),
+            promotion_goal: row.promotion_goal.trim(),
             cost: row.cost,
             activations: row.activations,
             ctr: row.ctr,
@@ -170,6 +193,17 @@ export default function DailyRecordTable() {
       setSaving(false);
     }
   };
+
+  const creativeTypeOptions = useMemo(() => (
+    Array.from(new Set(authorizedScopes.filter((scope) => scope.is_active).map((scope) => scope.creative_type)))
+      .map((value) => ({ value, label: value }))
+  ), [authorizedScopes]);
+
+  const promotionGoalOptionsFor = useCallback((creativeType: string) => (
+    authorizedScopes
+      .filter((scope) => scope.is_active && scope.creative_type === creativeType)
+      .map((scope) => ({ value: scope.promotion_goal, label: scope.promotion_goal }))
+  ), [authorizedScopes]);
 
   const handleDelete = async (row: EditableRow) => {
     if (!row.id) {
@@ -195,10 +229,33 @@ export default function DailyRecordTable() {
       width: 160,
       fixed: 'left' as const,
       render: (value: string, row: EditableRow) => (
-        <Input
+        <Select
           value={value}
-          placeholder="如短剧/小说/工具"
-          onChange={(event) => updateRow(row.key, 'creative_type', event.target.value)}
+          placeholder="选择体裁"
+          options={creativeTypeOptions}
+          style={{ width: '100%' }}
+          onChange={(next) => {
+            const goals = promotionGoalOptionsFor(next);
+            updateRow(row.key, 'creative_type', next);
+            updateRow(row.key, 'promotion_goal', goals[0]?.value || '');
+          }}
+        />
+      ),
+    },
+    {
+      title: '投放目标',
+      dataIndex: 'promotion_goal',
+      key: 'promotion_goal',
+      width: 140,
+      fixed: 'left' as const,
+      render: (value: string, row: EditableRow) => (
+        <Select
+          value={value || undefined}
+          placeholder="选择目标"
+          options={promotionGoalOptionsFor(row.creative_type)}
+          disabled={!row.creative_type}
+          style={{ width: '100%' }}
+          onChange={(next) => updateRow(row.key, 'promotion_goal', next)}
         />
       ),
     },
@@ -297,7 +354,7 @@ export default function DailyRecordTable() {
           <Tag color="blue">代理端</Tag>
           <Title level={2} style={{ marginTop: 12, marginBottom: 8 }}>T-1 投放数据填报</Title>
           <Paragraph className="hero-text">
-            渠道和代理商由账号自动绑定。按体裁新增多行后提交，系统会立即重算站内告警。
+            渠道和代理商由账号自动绑定。按体裁与投放目标组合新增多行后提交，系统会立即重算站内告警。
           </Paragraph>
           <div className="badge-row" style={{ marginTop: 16 }}>
             <Tag>产品：{session?.productName || '-'}</Tag>
@@ -319,7 +376,7 @@ export default function DailyRecordTable() {
           <div className="hero-row">
             <Space wrap>
               <DatePicker value={dayjs(selectedDate)} allowClear={false} onChange={(value) => value && setSelectedDate(value.format('YYYY-MM-DD'))} />
-              <Button icon={<PlusOutlined />} onClick={handleAddRow}>新增体裁行</Button>
+              <Button icon={<PlusOutlined />} onClick={handleAddRow}>新增填报行</Button>
               <Button icon={<ReloadOutlined />} onClick={fetchRecords}>刷新</Button>
             </Space>
             <Button type="primary" icon={<SaveOutlined />} onClick={handleSave} loading={saving}>
@@ -335,8 +392,8 @@ export default function DailyRecordTable() {
             dataSource={draftRows}
             columns={resizableColumns}
             pagination={false}
-            scroll={{ x: 1320 }}
-            locale={{ emptyText: '当日暂无数据，点击“新增体裁行”开始填报' }}
+            scroll={{ x: 1460 }}
+            locale={{ emptyText: '当日暂无数据，点击“新增填报行”开始填报' }}
           />
         </Card>
       </div>

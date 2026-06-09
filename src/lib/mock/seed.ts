@@ -114,8 +114,8 @@ const AGENT_PROFILES: AgentProfile[] = [
 const DEMO_AGENT_PASSWORD_HASH = '$2b$10$.HYQ2.Po9sNsufYOl5mIgegyuxHtmLbxoQbF1/6NgmH2tgvQAz3tG';
 
 const PROJECT_NAMES = [
-  '小说拉新',
-  '工具变现',
+  '单本拉新',
+  '影游投放',
   '短剧投流',
 ];
 
@@ -141,7 +141,7 @@ export const mockAgents: Agent[] = AGENT_PROFILES.map((profile) => ({
   channel_id: profile.channelId,
   name: profile.name,
   username: profile.id.replace('agent-', ''),
-  creative_types: ['短剧', '小游戏', '小说', '工具'],
+  creative_types: ['单本', '短剧', '有声', '影游'],
   password_hash: DEMO_AGENT_PASSWORD_HASH,
   is_active: true,
   created_at: dayjs().subtract(90, 'day').toISOString(),
