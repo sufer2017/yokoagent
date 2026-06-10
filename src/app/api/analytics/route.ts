@@ -169,6 +169,11 @@ function relationName(value: unknown) {
   return relation?.name || '';
 }
 
+function relationIsActive(value: unknown) {
+  const relation = Array.isArray(value) ? value[0] : value as { is_active?: boolean } | null;
+  return relation?.is_active !== false;
+}
+
 function latestTarget(targets: TargetRow[], productId: string, agentId: string, channelId: string, creativeType: string, promotionGoal: string, recordDate: string) {
   return targets
     .filter((target) => (
@@ -539,10 +544,13 @@ export async function GET(request: NextRequest) {
       const allCreativeTypes = Array.from(new Set(scopedRecordsForOptions.map((record) => record.creative_type))).sort((left, right) => left.localeCompare(right, 'zh-Hans-CN'));
       const allPromotionGoals = Array.from(new Set(scopedRecordsForOptions.map((record) => record.promotion_goal))).sort((left, right) => left.localeCompare(right, 'zh-Hans-CN'));
       const optionProducts = db.products
+        .filter((product) => product.is_active)
         .filter((product) => session.role !== 'agent' || product.id === session.productId);
       const optionChannels = db.channels
         .filter((channel) => session.role !== 'agent' || channel.id === session.channelId);
       const optionAgents = db.agents
+        .filter((agent) => agent.is_active)
+        .filter((agent) => db.products.find((product) => product.id === agent.product_id)?.is_active !== false)
         .filter((agent) => session.role !== 'agent' || agent.id === session.agentId);
       const rows = db.daily_records
         .filter((record) => record.record_date >= dateFrom && record.record_date <= dateTo)
@@ -638,13 +646,14 @@ export async function GET(request: NextRequest) {
 
     let agentsQuery = supabase
         .from('agents')
-        .select('id, name, product_id, channel_id, is_active, products(name), channels(name)')
+        .select('id, name, product_id, channel_id, is_active, products(name, is_active), channels(name)')
         .order('name');
     if (session.role === 'agent') agentsQuery = agentsQuery.eq('id', session.agentId!);
 
     let productsQuery = supabase
         .from('products')
-        .select('id, name')
+        .select('id, name, is_active')
+        .eq('is_active', true)
         .order('name');
     if (session.role === 'agent') productsQuery = productsQuery.eq('id', session.productId!);
 
@@ -705,11 +714,13 @@ export async function GET(request: NextRequest) {
       name: String(agent.name),
       product_id: String(agent.product_id),
       product_name: relationName(agent.products),
+      product_is_active: relationIsActive(agent.products),
       channel_id: String(agent.channel_id),
       channel_name: relationName(agent.channels),
       is_active: Boolean(agent.is_active),
     }));
-    const runningAgentCount = agents
+    const activeProductAgents = agents.filter((agent) => agent.is_active && agent.product_is_active);
+    const runningAgentCount = activeProductAgents
       .filter((agent) => agent.is_active)
       .filter((agent) => productIds.length === 0 || productIds.includes(agent.product_id))
       .filter((agent) => channelIds.length === 0 || channelIds.includes(agent.channel_id))
@@ -732,7 +743,7 @@ export async function GET(request: NextRequest) {
           id: String(channel.id),
           name: String(channel.name),
         })),
-        agents: agents.map((agent) => ({
+        agents: activeProductAgents.map((agent) => ({
           id: agent.id,
           name: agent.name,
           product_id: agent.product_id,

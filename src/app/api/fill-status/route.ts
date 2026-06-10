@@ -18,6 +18,7 @@ interface FillAgent {
   name: string;
   product_id: string;
   product_name: string;
+  product_is_active: boolean;
   channel_id: string;
   channel_name: string;
   creative_types: string[];
@@ -81,6 +82,11 @@ const STATUS_ORDER: Record<FillStatus, number> = {
 function relationName(value: unknown) {
   const relation = Array.isArray(value) ? value[0] : value as { name?: string } | null;
   return relation?.name || '';
+}
+
+function relationIsActive(value: unknown) {
+  const relation = Array.isArray(value) ? value[0] : value as { is_active?: boolean } | null;
+  return relation?.is_active !== false;
 }
 
 function latestTargetForCreative(
@@ -249,8 +255,8 @@ function buildResponse(
   }
 ) {
   const now = new Date();
-  const expectedRows = agents
-    .filter((agent) => agent.is_active)
+  const activeProductAgents = agents.filter((agent) => agent.is_active && agent.product_is_active);
+  const expectedRows = activeProductAgents
     .flatMap((agent) => scopesForAgent(agent, targets, records)
       .flatMap((scope) => dates.map((date) => buildStatusForDate(
         agent,
@@ -313,12 +319,11 @@ function buildResponse(
     lateRankSeries,
     detailRows: filteredRows,
     filterOptions: {
-      channels: Array.from(new Map(agents.map((agent) => [agent.channel_id, { id: agent.channel_id, name: agent.channel_name }])).values())
+      channels: Array.from(new Map(activeProductAgents.map((agent) => [agent.channel_id, { id: agent.channel_id, name: agent.channel_name }])).values())
         .sort((left, right) => left.name.localeCompare(right.name, 'zh-Hans-CN')),
-      products: Array.from(new Map(agents.map((agent) => [agent.product_id, { id: agent.product_id, name: agent.product_name }])).values())
+      products: Array.from(new Map(activeProductAgents.map((agent) => [agent.product_id, { id: agent.product_id, name: agent.product_name }])).values())
         .sort((left, right) => left.name.localeCompare(right.name, 'zh-Hans-CN')),
-      agents: agents
-        .filter((agent) => agent.is_active)
+      agents: activeProductAgents
         .map((agent) => ({
           id: agent.id,
           name: agent.name,
@@ -385,6 +390,7 @@ export async function GET(request: NextRequest) {
           name: agent.name,
           product_id: agent.product_id,
           product_name: db.products.find((product) => product.id === agent.product_id)?.name || '',
+          product_is_active: db.products.find((product) => product.id === agent.product_id)?.is_active !== false,
           channel_id: agent.channel_id,
           channel_name: db.channels.find((channel) => channel.id === agent.channel_id)?.name || '',
           creative_types: normalizeCreativeTypes(agent.creative_types),
@@ -421,7 +427,7 @@ export async function GET(request: NextRequest) {
     const supabase = createServerSupabase();
     let agentsQuery = supabase
         .from('agents')
-        .select('id, name, product_id, channel_id, creative_types, is_active, products(name), channels(name)')
+        .select('id, name, product_id, channel_id, creative_types, is_active, products(name, is_active), channels(name)')
         .eq('is_active', true)
         .order('name');
     if (session.role === 'agent') agentsQuery = agentsQuery.eq('id', session.agentId!);
@@ -459,6 +465,7 @@ export async function GET(request: NextRequest) {
       name: String(agent.name),
       product_id: String(agent.product_id),
       product_name: relationName(agent.products),
+      product_is_active: relationIsActive(agent.products),
       channel_id: String(agent.channel_id),
       channel_name: relationName(agent.channels),
       creative_types: normalizeCreativeTypes(agent.creative_types),

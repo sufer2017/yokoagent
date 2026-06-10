@@ -45,7 +45,7 @@ export default function TargetManager() {
         fetch('/api/targets').then((res) => res.json()),
         fetch('/api/agents?active=false').then((res) => res.json()),
         fetch('/api/channels?active=false').then((res) => res.json()),
-        fetch('/api/products?active=false').then((res) => res.json()),
+        fetch('/api/products').then((res) => res.json()),
       ]);
 
       if (!targetRes.success) throw new Error(targetRes.error || '指标加载失败');
@@ -166,7 +166,10 @@ export default function TargetManager() {
     },
   };
 
+  const activeProductIds = new Set(products.map((product) => product.id));
   const filteredAgents = agents.filter((agent) => (
+    activeProductIds.has(agent.product_id) &&
+    agent.is_active &&
     (!selectedProductId || agent.product_id === selectedProductId) &&
     (!selectedChannelId || agent.channel_id === selectedChannelId)
   ));
