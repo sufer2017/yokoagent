@@ -2,7 +2,13 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabase, hasSupabaseConfig } from '@/lib/supabase/server';
 import { getSession } from '@/lib/auth/session';
 import { decorateAlert, readLocalDb } from '@/lib/local-db/store';
-import { buildMetricDetails } from '@/lib/admin/metrics';
+import { buildMetricDetails, toNumberOrNull } from '@/lib/admin/metrics';
+import {
+  buildMetricIssueHitMap,
+  buildThresholdLookup,
+  readOptionalAlertThresholdRows,
+  type AlertThresholdSettingLike,
+} from '@/lib/admin/alertThresholds';
 
 const DEFAULT_PAGE_SIZE = 100;
 const MAX_PAGE_SIZE = 500;
@@ -95,12 +101,15 @@ export async function GET(request: NextRequest) {
           right.record_date.localeCompare(left.record_date) ||
           right.updated_at.localeCompare(left.updated_at)
         ));
+      const decoratedRows = rows
+        .map((alert) => decorateAlert(db, alert))
+        .filter((alert) => hasAlert !== 'true' || alert.metricDetails.some((detail) => detail.hit));
 
       return NextResponse.json({
         success: true,
-        data: rows.slice(pagination.from, pagination.to + 1).map((alert) => decorateAlert(db, alert)),
+        data: decoratedRows.slice(pagination.from, pagination.to + 1),
         pagination: {
-          total: rows.length,
+          total: decoratedRows.length,
           current: pagination.page,
           pageSize: pagination.pageSize,
         },
@@ -144,10 +153,39 @@ export async function GET(request: NextRequest) {
 
     if (targetsError) throw targetsError;
     const targetRows = (targets || []) as TargetRow[];
+    let thresholdsQuery = supabase
+      .from('alert_threshold_settings')
+      .select('product_id, channel_id, creative_type, metric_key, upper_threshold, lower_threshold');
+    if (productId) thresholdsQuery = thresholdsQuery.eq('product_id', productId);
+    if (channelId) thresholdsQuery = thresholdsQuery.eq('channel_id', channelId);
+    const thresholdLookup = buildThresholdLookup(
+      await readOptionalAlertThresholdRows<AlertThresholdSettingLike>(thresholdsQuery)
+    );
 
     const rows = (data || []).map((row: Record<string, unknown>) => {
       const agent = row.agents as { name?: string; feishu_webhook?: string | null } | null;
       const target = latestTarget(targetRows, String(row.product_id), String(row.agent_id), String(row.channel_id), String(row.creative_type), String(row.promotion_goal || ''), String(row.record_date));
+      const issueHits = buildMetricIssueHitMap(
+        thresholdLookup,
+        String(row.product_id),
+        String(row.channel_id),
+        String(row.creative_type),
+        {
+          cost_dod: toNumberOrNull(row.cost_dod),
+          cost_wow: toNumberOrNull(row.cost_wow),
+          activations_dod: toNumberOrNull(row.activations_dod),
+          activations_wow: toNumberOrNull(row.activations_wow),
+          cpa_target_deviation: toNumberOrNull(row.cpa_target_deviation),
+          cpa_dod: toNumberOrNull(row.cpa_dod),
+          cpa_wow: toNumberOrNull(row.cpa_wow),
+          retention_day1_dod: toNumberOrNull(row.retention_day1_dod),
+          retention_day1_wow: toNumberOrNull(row.retention_day1_wow),
+          retention_day1_target_deviation: toNumberOrNull(row.retention_day1_target_deviation),
+          retention_day7_dod: toNumberOrNull(row.retention_day7_dod),
+          retention_day7_wow: toNumberOrNull(row.retention_day7_wow),
+          retention_day7_target_deviation: toNumberOrNull(row.retention_day7_target_deviation),
+        }
+      );
       return {
         ...row,
         agent_name: agent?.name,
@@ -162,7 +200,8 @@ export async function GET(request: NextRequest) {
         metricDetails: buildMetricDetails(
           row,
           row.daily_records as Record<string, unknown> | null,
-          target
+          target,
+          issueHits
         ),
         agents: undefined,
         products: undefined,
@@ -170,12 +209,15 @@ export async function GET(request: NextRequest) {
         daily_records: undefined,
       };
     });
+    const visibleRows = hasAlert === 'true'
+      ? rows.filter((row) => row.metricDetails.some((detail) => detail.hit))
+      : rows;
 
     return NextResponse.json({
       success: true,
-      data: rows,
+      data: visibleRows,
       pagination: {
-        total: count || 0,
+        total: hasAlert === 'true' ? visibleRows.length : count || 0,
         current: pagination.page,
         pageSize: pagination.pageSize,
       },

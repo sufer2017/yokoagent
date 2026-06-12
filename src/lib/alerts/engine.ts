@@ -1,5 +1,13 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import dayjs from 'dayjs';
+import {
+  buildMetricIssueHitMap,
+  buildThresholdLookup,
+  compactThresholdSummaryParts,
+  hasMetricIssueHit,
+  readOptionalAlertThresholdRows,
+  type AlertThresholdSettingLike,
+} from '@/lib/admin/alertThresholds';
 
 interface DailyRecordRow {
   id: string;
@@ -136,6 +144,17 @@ async function fetchExistingStatus(supabase: SupabaseClient, recordId: string) {
   return status === 'acknowledged' || status === 'resolved' ? status : 'open';
 }
 
+async function fetchThresholdSettings(supabase: SupabaseClient, record: DailyRecordRow) {
+  return readOptionalAlertThresholdRows<AlertThresholdSettingLike>(
+    supabase
+      .from('alert_threshold_settings')
+      .select('product_id, channel_id, creative_type, metric_key, upper_threshold, lower_threshold')
+      .eq('product_id', record.product_id)
+      .eq('channel_id', record.channel_id)
+      .eq('creative_type', record.creative_type)
+  );
+}
+
 export async function recalculateAlertsForRecordIds(
   supabase: SupabaseClient,
   recordIds: string[]
@@ -159,39 +178,67 @@ export async function recalculateAlertsForRecordIds(
     const cpaDeviation = round4(percentDelta(metricValue(record, 'cpa'), toNumber(target?.target_cpa)));
     const day1Deviation = round4(percentDelta(metricValue(record, 'retention_day1'), toNumber(target?.target_retention_day1)));
     const day7Deviation = round4(percentDelta(metricValue(record, 'retention_day7'), toNumber(target?.target_retention_day7)));
-    const isCostAlert = deltas.cost_dod != null && (deltas.cost_dod > 50 || deltas.cost_dod < -50);
-    const isActivationsAlert = deltas.activations_dod != null && (deltas.activations_dod > 50 || deltas.activations_dod < -50);
-
-    const isCpaAlert =
-      (deltas.cpa_dod != null && deltas.cpa_dod >= 25) ||
-      (deltas.cpa_wow != null && deltas.cpa_wow >= 15) ||
-      (cpaDeviation != null && cpaDeviation >= 20);
-
-    const isDay1Alert =
-      (deltas.retention_day1_dod != null && deltas.retention_day1_dod <= -30) ||
-      (deltas.retention_day1_wow != null && deltas.retention_day1_wow <= -15) ||
-      (day1Deviation != null && day1Deviation <= -20);
-
-    const isDay7Alert =
-      (deltas.retention_day7_dod != null && deltas.retention_day7_dod <= -30) ||
-      (deltas.retention_day7_wow != null && deltas.retention_day7_wow <= -15) ||
-      (day7Deviation != null && day7Deviation <= -20);
+    const thresholds = buildThresholdLookup(await fetchThresholdSettings(supabase, record));
+    const issueHits = buildMetricIssueHitMap(
+      thresholds,
+      record.product_id,
+      record.channel_id,
+      record.creative_type,
+      {
+        cost_dod: deltas.cost_dod,
+        cost_wow: deltas.cost_wow,
+        activations_dod: deltas.activations_dod,
+        activations_wow: deltas.activations_wow,
+        cpa_target_deviation: cpaDeviation,
+        cpa_dod: deltas.cpa_dod,
+        cpa_wow: deltas.cpa_wow,
+        retention_day1_dod: deltas.retention_day1_dod,
+        retention_day1_wow: deltas.retention_day1_wow,
+        retention_day1_target_deviation: day1Deviation,
+        retention_day7_dod: deltas.retention_day7_dod,
+        retention_day7_wow: deltas.retention_day7_wow,
+        retention_day7_target_deviation: day7Deviation,
+      }
+    );
+    const isCostAlert = hasMetricIssueHit(issueHits, 'cost');
+    const isActivationsAlert = hasMetricIssueHit(issueHits, 'activations');
+    const isCpaAlert = hasMetricIssueHit(issueHits, 'cpa');
+    const isDay1Alert = hasMetricIssueHit(issueHits, 'retention_day1');
+    const isDay7Alert = hasMetricIssueHit(issueHits, 'retention_day7');
 
     const summaries = [];
     if (isCostAlert) {
-      summaries.push(`消耗异常：日环比 ${formatSignedPercent(deltas.cost_dod)}`);
+      summaries.push(`消耗异常：${compactThresholdSummaryParts([
+        issueHits.cost?.dod && `日环比 ${formatSignedPercent(deltas.cost_dod)}`,
+        issueHits.cost?.wow && `周同比 ${formatSignedPercent(deltas.cost_wow)}`,
+      ])}`);
     }
     if (isActivationsAlert) {
-      summaries.push(`激活异常：日环比 ${formatSignedPercent(deltas.activations_dod)}`);
+      summaries.push(`激活异常：${compactThresholdSummaryParts([
+        issueHits.activations?.dod && `日环比 ${formatSignedPercent(deltas.activations_dod)}`,
+        issueHits.activations?.wow && `周同比 ${formatSignedPercent(deltas.activations_wow)}`,
+      ])}`);
     }
     if (isCpaAlert) {
-      summaries.push(`CPA异常：日环比 ${formatSignedPercent(deltas.cpa_dod)}，周同比 ${formatSignedPercent(deltas.cpa_wow)}，考核偏离 ${formatSignedPercent(cpaDeviation)}`);
+      summaries.push(`CPA异常：${compactThresholdSummaryParts([
+        issueHits.cpa?.dod && `日环比 ${formatSignedPercent(deltas.cpa_dod)}`,
+        issueHits.cpa?.wow && `周同比 ${formatSignedPercent(deltas.cpa_wow)}`,
+        issueHits.cpa?.target_deviation && `考核偏离 ${formatSignedPercent(cpaDeviation)}`,
+      ])}`);
     }
     if (isDay1Alert) {
-      summaries.push(`次留异常：日环比 ${formatSignedPercent(deltas.retention_day1_dod)}，周同比 ${formatSignedPercent(deltas.retention_day1_wow)}，考核偏离 ${formatSignedPercent(day1Deviation)}`);
+      summaries.push(`次留异常：${compactThresholdSummaryParts([
+        issueHits.retention_day1?.dod && `日环比 ${formatSignedPercent(deltas.retention_day1_dod)}`,
+        issueHits.retention_day1?.wow && `周同比 ${formatSignedPercent(deltas.retention_day1_wow)}`,
+        issueHits.retention_day1?.target_deviation && `考核偏离 ${formatSignedPercent(day1Deviation)}`,
+      ])}`);
     }
     if (isDay7Alert) {
-      summaries.push(`7留异常：日环比 ${formatSignedPercent(deltas.retention_day7_dod)}，周同比 ${formatSignedPercent(deltas.retention_day7_wow)}，考核偏离 ${formatSignedPercent(day7Deviation)}`);
+      summaries.push(`7留异常：${compactThresholdSummaryParts([
+        issueHits.retention_day7?.dod && `日环比 ${formatSignedPercent(deltas.retention_day7_dod)}`,
+        issueHits.retention_day7?.wow && `周同比 ${formatSignedPercent(deltas.retention_day7_wow)}`,
+        issueHits.retention_day7?.target_deviation && `考核偏离 ${formatSignedPercent(day7Deviation)}`,
+      ])}`);
     }
 
     const hasAlert = isCostAlert || isActivationsAlert || isCpaAlert || isDay1Alert || isDay7Alert;

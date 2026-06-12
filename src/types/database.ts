@@ -133,6 +133,33 @@ export interface AlertIssueStatus {
   updated_at: string;
 }
 
+export type AlertThresholdMetricKey =
+  | 'cost_dod'
+  | 'cost_wow'
+  | 'activations_dod'
+  | 'activations_wow'
+  | 'cpa_target_deviation'
+  | 'cpa_dod'
+  | 'cpa_wow'
+  | 'retention_day1_dod'
+  | 'retention_day1_wow'
+  | 'retention_day1_target_deviation'
+  | 'retention_day7_dod'
+  | 'retention_day7_wow'
+  | 'retention_day7_target_deviation';
+
+export interface AlertThresholdSetting {
+  id: string;
+  product_id: string;
+  channel_id: string;
+  creative_type: string;
+  metric_key: AlertThresholdMetricKey;
+  upper_threshold: number | null;
+  lower_threshold: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface AlertResult {
   id: string;
   daily_record_id: string;

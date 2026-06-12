@@ -5,6 +5,8 @@ import {
   Button,
   Card,
   DatePicker,
+  Drawer,
+  InputNumber,
   Empty,
   Pagination,
   Select,
@@ -16,8 +18,9 @@ import {
 } from 'antd';
 import type { TableColumnsType } from 'antd';
 import dayjs from 'dayjs';
-import { AreaChartOutlined, CheckCircleOutlined, CopyOutlined, DownloadOutlined, ReloadOutlined } from '@ant-design/icons';
+import { AreaChartOutlined, CheckCircleOutlined, CopyOutlined, DownloadOutlined, ReloadOutlined, SettingOutlined } from '@ant-design/icons';
 import { useResizableColumns } from '@/components/common/useResizableColumns';
+import { ALERT_THRESHOLD_METRICS, type AlertThresholdMetricKey } from '@/lib/admin/alertThresholds';
 
 const { RangePicker } = DatePicker;
 const { Title, Paragraph, Text } = Typography;
@@ -40,6 +43,9 @@ interface MetricDetail {
   dod: number | null;
   wow: number | null;
   targetDeviation: number | null;
+  dodHit?: boolean;
+  wowHit?: boolean;
+  targetDeviationHit?: boolean;
   hit: boolean;
 }
 
@@ -115,6 +121,37 @@ interface AlertPageState {
   pageSize: number;
 }
 
+interface ThresholdValue {
+  upper_threshold: number | null;
+  lower_threshold: number | null;
+}
+
+interface ThresholdRow {
+  id: string;
+  product_id: string;
+  product_name: string;
+  channel_id: string;
+  channel_name: string;
+  creative_type: string;
+  thresholds: Record<AlertThresholdMetricKey, ThresholdValue>;
+}
+
+interface ThresholdPayload {
+  metrics: Array<{ key: AlertThresholdMetricKey; label: string }>;
+  filters: {
+    products: Array<{ id: string; name: string }>;
+    channels: Array<{ id: string; name: string }>;
+    creativeTypes: Array<{ name: string }>;
+  };
+  rows: ThresholdRow[];
+}
+
+interface ThresholdFilters {
+  productIds: string[];
+  channelIds: string[];
+  creativeTypes: string[];
+}
+
 interface AlertCenterProps {
   scope?: 'admin' | 'agent';
   fixedProductId?: string;
@@ -134,23 +171,6 @@ function valueText(value: number | null, unit: 'number' | 'percent') {
 
 function compareText(left?: string | null, right?: string | null) {
   return String(left || '').localeCompare(String(right || ''), 'zh-Hans-CN');
-}
-
-function deviationHit(metric: MetricKey, type: AlertType, value: number | null) {
-  if (value == null) return false;
-  if (metric === 'cost' || metric === 'activations') {
-    return type === '日环比偏离' && (value > 50 || value < -50);
-  }
-  if (metric === 'cpa') {
-    return type === '日环比偏离' ? value >= 25 : value >= 15;
-  }
-  return type === '日环比偏离' ? value <= -30 : value <= -15;
-}
-
-function targetDeviationHit(metric: MetricKey, value: number | null) {
-  if (value == null) return false;
-  if (metric === 'cost' || metric === 'activations') return false;
-  return metric === 'cpa' ? value >= 20 : value <= -20;
 }
 
 function baselineFromDeviation(actual: number | null, deviation: number | null) {
@@ -238,19 +258,19 @@ function metricDetailRows(rows: AlertRow[]) {
           type: '日环比偏离',
           value: detail.dod,
           baseline: baselineFromDeviation(detail.actualValue, detail.dod),
-          hit: deviationHit(detail.key, '日环比偏离', detail.dod),
+          hit: Boolean(detail.dodHit),
         },
         {
           type: '周同比偏离',
           value: detail.wow,
           baseline: baselineFromDeviation(detail.actualValue, detail.wow),
-          hit: deviationHit(detail.key, '周同比偏离', detail.wow),
+          hit: Boolean(detail.wowHit),
         },
         {
           type: '考核值偏离',
           value: detail.targetDeviation,
           baseline: detail.targetValue,
-          hit: targetDeviationHit(detail.key, detail.targetDeviation),
+          hit: Boolean(detail.targetDeviationHit),
         },
       ];
 
@@ -420,6 +440,15 @@ export default function AlertCenter({
     current: 1,
     pageSize: ALERT_DETAIL_PAGE_SIZE,
   });
+  const [thresholdOpen, setThresholdOpen] = useState(false);
+  const [thresholdLoading, setThresholdLoading] = useState(false);
+  const [thresholdSavingId, setThresholdSavingId] = useState<string | null>(null);
+  const [thresholdData, setThresholdData] = useState<ThresholdPayload | null>(null);
+  const [thresholdFilters, setThresholdFilters] = useState<ThresholdFilters>({
+    productIds: [],
+    channelIds: [],
+    creativeTypes: [],
+  });
   const [dailyPage, setDailyPage] = useState(1);
   const [updatingIssueIds, setUpdatingIssueIds] = useState<Set<string>>(new Set());
   const [exitingIssueIds, setExitingIssueIds] = useState<Set<string>>(new Set());
@@ -496,6 +525,83 @@ export default function AlertCenter({
     }
   }, [fixedAgentId, fixedChannelId, fixedProductId, isAgentScope, messageApi, promotionGoal, reportDate, status]);
 
+  const fetchThresholds = useCallback(async () => {
+    if (isAgentScope) return;
+    setThresholdLoading(true);
+    try {
+      const response = await fetch('/api/alert-thresholds');
+      const payload = await response.json();
+      if (!payload.success) {
+        throw new Error(payload.error || '阈值设置加载失败');
+      }
+      setThresholdData(payload.data || null);
+    } catch (error) {
+      messageApi.error(error instanceof Error ? error.message : '加载阈值设置失败');
+    } finally {
+      setThresholdLoading(false);
+    }
+  }, [isAgentScope, messageApi]);
+
+  const openThresholdSettings = () => {
+    setThresholdOpen(true);
+    fetchThresholds();
+  };
+
+  const updateThresholdCell = (
+    rowId: string,
+    metricKey: AlertThresholdMetricKey,
+    direction: keyof ThresholdValue,
+    value: number | null
+  ) => {
+    setThresholdData((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        rows: current.rows.map((row) => {
+          if (row.id !== rowId) return row;
+          return {
+            ...row,
+            thresholds: {
+              ...row.thresholds,
+              [metricKey]: {
+                ...row.thresholds[metricKey],
+                [direction]: value,
+              },
+            },
+          };
+        }),
+      };
+    });
+  };
+
+  const saveThresholdRow = async (row: ThresholdRow) => {
+    setThresholdSavingId(row.id);
+    try {
+      const response = await fetch('/api/alert-thresholds', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          product_id: row.product_id,
+          channel_id: row.channel_id,
+          creative_type: row.creative_type,
+          thresholds: row.thresholds,
+        }),
+      });
+      const payload = await response.json();
+      if (!payload.success) {
+        throw new Error(payload.error || '保存阈值设置失败');
+      }
+      setThresholdData(payload.data || null);
+      messageApi.success('告警阈值已保存');
+      fetchAlerts();
+      fetchDailyReport();
+    } catch (error) {
+      messageApi.error(error instanceof Error ? error.message : '保存阈值设置失败');
+    } finally {
+      setThresholdSavingId(null);
+    }
+  };
+
   useEffect(() => {
     fetchAlerts();
     fetchDailyReport();
@@ -530,6 +636,111 @@ export default function AlertCenter({
       ...(dailyReport?.highlightItems || []).map((item) => item.promotion_goal).filter(Boolean),
     ])).sort((left, right) => left.localeCompare(right, 'zh-Hans-CN')).map((value) => ({ value, label: value }))
   ), [dailyReport?.highlightItems, rows]);
+  const thresholdRows = useMemo(() => (
+    (thresholdData?.rows || []).filter((row) => (
+      (thresholdFilters.productIds.length === 0 || thresholdFilters.productIds.includes(row.product_id)) &&
+      (thresholdFilters.channelIds.length === 0 || thresholdFilters.channelIds.includes(row.channel_id)) &&
+      (thresholdFilters.creativeTypes.length === 0 || thresholdFilters.creativeTypes.includes(row.creative_type))
+    ))
+  ), [thresholdData?.rows, thresholdFilters]);
+  const thresholdColumns: TableColumnsType<ThresholdRow> = [
+    {
+      title: '产品',
+      dataIndex: 'product_name',
+      key: 'product_name',
+      width: 140,
+      fixed: 'left',
+      sorter: (left, right) => compareText(left.product_name, right.product_name),
+      render: (value: string) => <Tag color="blue">{value}</Tag>,
+    },
+    {
+      title: '渠道',
+      dataIndex: 'channel_name',
+      key: 'channel_name',
+      width: 120,
+      fixed: 'left',
+      sorter: (left, right) => compareText(left.channel_name, right.channel_name),
+      render: (value: string) => <Tag>{value}</Tag>,
+    },
+    {
+      title: '体裁',
+      dataIndex: 'creative_type',
+      key: 'creative_type',
+      width: 120,
+      fixed: 'left',
+      sorter: (left, right) => compareText(left.creative_type, right.creative_type),
+      render: (value: string) => <Tag color="purple">{value}</Tag>,
+    },
+    {
+      title: '告警阈值',
+      children: ALERT_THRESHOLD_METRICS.map((metric) => ({
+        title: metric.label,
+        key: metric.key,
+        children: [
+          {
+            title: '超过',
+            key: `${metric.key}-upper`,
+            width: 112,
+            align: 'center',
+            render: (_: unknown, row: ThresholdRow) => {
+              const value = row.thresholds[metric.key] || { upper_threshold: null, lower_threshold: null };
+              return (
+                <Space size={4} wrap={false} className="threshold-direction-cell">
+                  <Text type="secondary">+</Text>
+                  <InputNumber
+                    min={0}
+                    controls={false}
+                    value={value.upper_threshold}
+                    precision={2}
+                    onChange={(next) => updateThresholdCell(row.id, metric.key, 'upper_threshold', typeof next === 'number' ? next : null)}
+                  />
+                  <Text type="secondary">%</Text>
+                </Space>
+              );
+            },
+          },
+          {
+            title: '低于',
+            key: `${metric.key}-lower`,
+            width: 112,
+            align: 'center',
+            render: (_: unknown, row: ThresholdRow) => {
+              const value = row.thresholds[metric.key] || { upper_threshold: null, lower_threshold: null };
+              return (
+                <Space size={4} wrap={false} className="threshold-direction-cell">
+                  <Text type="secondary">-</Text>
+                  <InputNumber
+                    min={0}
+                    controls={false}
+                    value={value.lower_threshold}
+                    precision={2}
+                    onChange={(next) => updateThresholdCell(row.id, metric.key, 'lower_threshold', typeof next === 'number' ? next : null)}
+                  />
+                  <Text type="secondary">%</Text>
+                </Space>
+              );
+            },
+          },
+        ],
+      })),
+    },
+    {
+      title: '操作',
+      key: 'actions',
+      width: 92,
+      fixed: 'right',
+      render: (_: unknown, row: ThresholdRow) => (
+        <Button
+          size="small"
+          type="primary"
+          loading={thresholdSavingId === row.id}
+          onClick={() => saveThresholdRow(row)}
+        >
+          保存
+        </Button>
+      ),
+    },
+  ];
 
   const copyMarkdown = async () => {
     if (!dailyReport) {
@@ -751,6 +962,62 @@ export default function AlertCenter({
   return (
     <>
       {contextHolder}
+      <Drawer
+        title="告警阈值设置"
+        size="min(96vw, 1440px)"
+        open={thresholdOpen}
+        onClose={() => setThresholdOpen(false)}
+        extra={(
+          <Space>
+            <Button onClick={() => setThresholdOpen(false)}>取消</Button>
+            <Button icon={<ReloadOutlined />} onClick={fetchThresholds}>刷新</Button>
+          </Space>
+        )}
+      >
+        <div className="console-stack">
+          <Space wrap>
+            <Select
+              mode="multiple"
+              allowClear
+              placeholder="产品"
+              value={thresholdFilters.productIds}
+              style={{ minWidth: 220 }}
+              onChange={(productIds) => setThresholdFilters((current) => ({ ...current, productIds }))}
+              options={(thresholdData?.filters.products || []).map((item) => ({ value: item.id, label: item.name }))}
+            />
+            <Select
+              mode="multiple"
+              allowClear
+              placeholder="渠道"
+              value={thresholdFilters.channelIds}
+              style={{ minWidth: 220 }}
+              onChange={(channelIds) => setThresholdFilters((current) => ({ ...current, channelIds }))}
+              options={(thresholdData?.filters.channels || []).map((item) => ({ value: item.id, label: item.name }))}
+            />
+            <Select
+              mode="multiple"
+              allowClear
+              placeholder="体裁"
+              value={thresholdFilters.creativeTypes}
+              style={{ minWidth: 220 }}
+              onChange={(creativeTypes) => setThresholdFilters((current) => ({ ...current, creativeTypes }))}
+              options={(thresholdData?.filters.creativeTypes || []).map((item) => ({ value: item.name, label: item.name }))}
+            />
+            <Text type="secondary">空值表示该方向阈值未启用。</Text>
+          </Space>
+          <Table
+            rowKey="id"
+            size="small"
+            loading={thresholdLoading}
+            dataSource={thresholdRows}
+            columns={thresholdColumns}
+            pagination={{ pageSize: 20, showSizeChanger: true, pageSizeOptions: [10, 20, 50, 100] }}
+            scroll={{ x: 2500, y: 'calc(100vh - 260px)' }}
+            tableLayout="fixed"
+            locale={{ emptyText: '暂无可配置的产品 / 渠道 / 体裁组合。' }}
+          />
+        </div>
+      </Drawer>
       <div className="console-stack">
         <Card className="section-card">
           <div className="hero-row">
@@ -778,6 +1045,7 @@ export default function AlertCenter({
             <Space wrap>
               {!isAgentScope && (
                 <>
+                  <Button icon={<SettingOutlined />} onClick={openThresholdSettings}>告警阈值设置</Button>
                   <Button icon={<CopyOutlined />} disabled={!dailyReport} onClick={copyMarkdown}>复制给 Aime</Button>
                   <Button icon={<DownloadOutlined />} disabled={!dailyReport} onClick={downloadMarkdown}>下载 MD</Button>
                 </>

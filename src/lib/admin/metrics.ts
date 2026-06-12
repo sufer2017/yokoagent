@@ -1,4 +1,5 @@
 import dayjs from 'dayjs';
+import type { AlertMetricIssueHitMap, AlertThresholdMetricGroup } from '@/lib/admin/alertThresholds';
 
 export type AlertMetricKey = 'cost' | 'activations' | 'cpa' | 'retention_day1' | 'retention_day7';
 
@@ -20,7 +21,9 @@ export interface TargetLike {
 
 export interface AlertLike {
   cost_dod?: number | string | null;
+  cost_wow?: number | string | null;
   activations_dod?: number | string | null;
+  activations_wow?: number | string | null;
   cpa_dod?: number | string | null;
   cpa_wow?: number | string | null;
   cpa_target_deviation?: number | string | null;
@@ -46,6 +49,9 @@ export interface MetricDetail {
   dod: number | null;
   wow: number | null;
   targetDeviation: number | null;
+  dodHit: boolean;
+  wowHit: boolean;
+  targetDeviationHit: boolean;
   hit: boolean;
   redlineHit: boolean;
   redlineLabel: string;
@@ -116,8 +122,20 @@ export function buildRedlineFlags(record: MetricRecordLike, target: TargetLike |
 export function buildMetricDetails(
   alert: AlertLike,
   record: MetricRecordLike | null | undefined,
-  target: TargetLike | null | undefined
+  target: TargetLike | null | undefined,
+  issueHits: AlertMetricIssueHitMap = {}
 ): MetricDetail[] {
+  const hitFor = (group: AlertThresholdMetricGroup) => ({
+    dodHit: Boolean(issueHits[group]?.dod),
+    wowHit: Boolean(issueHits[group]?.wow),
+    targetDeviationHit: Boolean(issueHits[group]?.target_deviation),
+  });
+  const isHit = (hits: ReturnType<typeof hitFor>) => hits.dodHit || hits.wowHit || hits.targetDeviationHit;
+  const costHits = hitFor('cost');
+  const activationsHits = hitFor('activations');
+  const cpaHits = hitFor('cpa');
+  const day1Hits = hitFor('retention_day1');
+  const day7Hits = hitFor('retention_day7');
   return [
     {
       key: 'cost',
@@ -126,11 +144,12 @@ export function buildMetricDetails(
       actualValue: metricValue(record, 'cost'),
       targetValue: null,
       dod: toNumberOrNull(alert.cost_dod),
-      wow: null,
+      wow: toNumberOrNull(alert.cost_wow),
       targetDeviation: null,
-      hit: Boolean(alert.is_cost_alert),
-      redlineHit: Boolean(alert.is_cost_alert),
-      redlineLabel: '日环比波动超过50%',
+      ...costHits,
+      hit: isHit(costHits),
+      redlineHit: isHit(costHits),
+      redlineLabel: '命中告警阈值',
     },
     {
       key: 'activations',
@@ -139,11 +158,12 @@ export function buildMetricDetails(
       actualValue: metricValue(record, 'activations'),
       targetValue: null,
       dod: toNumberOrNull(alert.activations_dod),
-      wow: null,
+      wow: toNumberOrNull(alert.activations_wow),
       targetDeviation: null,
-      hit: Boolean(alert.is_activations_alert),
-      redlineHit: Boolean(alert.is_activations_alert),
-      redlineLabel: '日环比波动超过50%',
+      ...activationsHits,
+      hit: isHit(activationsHits),
+      redlineHit: isHit(activationsHits),
+      redlineLabel: '命中告警阈值',
     },
     {
       key: 'cpa',
@@ -154,9 +174,10 @@ export function buildMetricDetails(
       dod: toNumberOrNull(alert.cpa_dod),
       wow: toNumberOrNull(alert.cpa_wow),
       targetDeviation: toNumberOrNull(alert.cpa_target_deviation),
-      hit: Boolean(alert.is_cpa_alert),
-      redlineHit: record ? isMetricRedline(record, target, 'cpa') : false,
-      redlineLabel: '高于考核 CPA',
+      ...cpaHits,
+      hit: isHit(cpaHits),
+      redlineHit: isHit(cpaHits),
+      redlineLabel: '命中告警阈值',
     },
     {
       key: 'retention_day1',
@@ -167,9 +188,10 @@ export function buildMetricDetails(
       dod: toNumberOrNull(alert.retention_day1_dod),
       wow: toNumberOrNull(alert.retention_day1_wow),
       targetDeviation: toNumberOrNull(alert.retention_day1_target_deviation),
-      hit: Boolean(alert.is_retention_day1_alert),
-      redlineHit: record ? isMetricRedline(record, target, 'retention_day1') : false,
-      redlineLabel: '低于考核次留',
+      ...day1Hits,
+      hit: isHit(day1Hits),
+      redlineHit: isHit(day1Hits),
+      redlineLabel: '命中告警阈值',
     },
     {
       key: 'retention_day7',
@@ -180,9 +202,10 @@ export function buildMetricDetails(
       dod: toNumberOrNull(alert.retention_day7_dod),
       wow: toNumberOrNull(alert.retention_day7_wow),
       targetDeviation: toNumberOrNull(alert.retention_day7_target_deviation),
-      hit: Boolean(alert.is_retention_day7_alert),
-      redlineHit: record ? isMetricRedline(record, target, 'retention_day7') : false,
-      redlineLabel: '低于考核7留',
+      ...day7Hits,
+      hit: isHit(day7Hits),
+      redlineHit: isHit(day7Hits),
+      redlineLabel: '命中告警阈值',
     },
   ];
 }

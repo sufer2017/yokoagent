@@ -15,6 +15,13 @@ import {
   type MetricRecordLike,
   type TargetLike,
 } from '@/lib/admin/metrics';
+import {
+  buildMetricIssueHitMap,
+  buildThresholdLookup,
+  readOptionalAlertThresholdRows,
+  type AlertThresholdLookup,
+  type AlertThresholdSettingLike,
+} from '@/lib/admin/alertThresholds';
 import { latestTargetForRecord, readLocalDb, type LocalDailyRecord, type LocalDb } from '@/lib/local-db/store';
 
 type IssueType = '日环比偏离' | '周同比偏离' | '考核值偏离';
@@ -72,7 +79,9 @@ interface ReportRow extends SourceRecord {
   target_retention_day1: number | null;
   target_retention_day7: number | null;
   cost_dod: number | null;
+  cost_wow: number | null;
   activations_dod: number | null;
+  activations_wow: number | null;
   cpa_dod: number | null;
   cpa_wow: number | null;
   cpa_target_deviation: number | null;
@@ -188,7 +197,9 @@ function buildReportRow(
     target_retention_day1: targetDay1,
     target_retention_day7: targetDay7,
     cost_dod: round4(toNumberOrNull(alert?.cost_dod)),
+    cost_wow: round4(toNumberOrNull(alert?.cost_wow)),
     activations_dod: round4(toNumberOrNull(alert?.activations_dod)),
+    activations_wow: round4(toNumberOrNull(alert?.activations_wow)),
     cpa_dod: round4(toNumberOrNull(alert?.cpa_dod)),
     cpa_wow: round4(toNumberOrNull(alert?.cpa_wow)),
     cpa_target_deviation: round4(toNumberOrNull(alert?.cpa_target_deviation)) ?? fallbackDeviation(cpa, targetCpa),
@@ -297,8 +308,10 @@ function summarySentence(row: ReportRow, metric: AlertMetricKey, issueType: Issu
   const label = metricLabel(metric);
   if (metric === 'cost' || metric === 'activations') {
     const direction = (deviation || 0) > 0 ? '激进放量' : '明显掉量';
-    const compareText = metric === 'cost' ? '消耗较昨日' : '量级较昨日';
-    return `${scope}：${compareText}${direction} ${pctText(deviation)}，T-1 ${label} ${valueText(actual, unit)}，昨日基准 ${valueText(baseline, unit)}。`;
+    const compareBase = issueType === '周同比偏离' ? '较上周同日' : '较昨日';
+    const baselineLabel = issueType === '周同比偏离' ? '上周同日基准' : '昨日基准';
+    const compareText = metric === 'cost' ? `消耗${compareBase}` : `量级${compareBase}`;
+    return `${scope}：${compareText}${direction} ${pctText(deviation)}，T-1 ${label} ${valueText(actual, unit)}，${baselineLabel} ${valueText(baseline, unit)}。`;
   }
   if (issueType === '考核值偏离') {
     const verb = metric === 'cpa' ? '高于考核' : '低于考核';
@@ -361,41 +374,69 @@ function buildHighlightItems(
   rows: ReportRow[],
   reportDate: string,
   status: string | null,
-  issueStatusById: Map<string, string>
+  issueStatusById: Map<string, string>,
+  thresholdLookup: AlertThresholdLookup
 ) {
   const items: Omit<HighlightItem, 'rank'>[] = [];
   for (const row of rows.filter((item) => item.record_date === reportDate)) {
-    if (row.cost_dod != null && (row.cost_dod > 50 || row.cost_dod < -50)) {
+    const issueHits = buildMetricIssueHitMap(
+      thresholdLookup,
+      row.product_id,
+      row.channel_id,
+      row.creative_type,
+      {
+        cost_dod: row.cost_dod,
+        cost_wow: row.cost_wow,
+        activations_dod: row.activations_dod,
+        activations_wow: row.activations_wow,
+        cpa_target_deviation: row.cpa_target_deviation,
+        cpa_dod: row.cpa_dod,
+        cpa_wow: row.cpa_wow,
+        retention_day1_dod: row.retention_day1_dod,
+        retention_day1_wow: row.retention_day1_wow,
+        retention_day1_target_deviation: row.retention_day1_target_deviation,
+        retention_day7_dod: row.retention_day7_dod,
+        retention_day7_wow: row.retention_day7_wow,
+        retention_day7_target_deviation: row.retention_day7_target_deviation,
+      }
+    );
+    if (issueHits.cost?.dod) {
       addHighlight(items, row, 'cost', '日环比偏离', row.cost_dod, baselineFromDeviation(row.cost, row.cost_dod), issueStatusById);
     }
-    if (row.activations_dod != null && (row.activations_dod > 50 || row.activations_dod < -50)) {
+    if (issueHits.cost?.wow) {
+      addHighlight(items, row, 'cost', '周同比偏离', row.cost_wow, baselineFromDeviation(row.cost, row.cost_wow), issueStatusById);
+    }
+    if (issueHits.activations?.dod) {
       addHighlight(items, row, 'activations', '日环比偏离', row.activations_dod, baselineFromDeviation(row.activations, row.activations_dod), issueStatusById);
     }
-    if (row.redline_cpa) {
+    if (issueHits.activations?.wow) {
+      addHighlight(items, row, 'activations', '周同比偏离', row.activations_wow, baselineFromDeviation(row.activations, row.activations_wow), issueStatusById);
+    }
+    if (issueHits.cpa?.target_deviation) {
       addHighlight(items, row, 'cpa', '考核值偏离', row.cpa_target_deviation, row.target_cpa, issueStatusById);
     }
-    if (row.cpa_dod != null && row.cpa_dod >= 25) {
+    if (issueHits.cpa?.dod) {
       addHighlight(items, row, 'cpa', '日环比偏离', row.cpa_dod, baselineFromDeviation(row.cpa, row.cpa_dod), issueStatusById);
     }
-    if (row.cpa_wow != null && row.cpa_wow >= 15) {
+    if (issueHits.cpa?.wow) {
       addHighlight(items, row, 'cpa', '周同比偏离', row.cpa_wow, baselineFromDeviation(row.cpa, row.cpa_wow), issueStatusById);
     }
-    if (row.redline_retention_day1) {
+    if (issueHits.retention_day1?.target_deviation) {
       addHighlight(items, row, 'retention_day1', '考核值偏离', row.retention_day1_target_deviation, row.target_retention_day1, issueStatusById);
     }
-    if (row.retention_day1_dod != null && row.retention_day1_dod <= -30) {
+    if (issueHits.retention_day1?.dod) {
       addHighlight(items, row, 'retention_day1', '日环比偏离', row.retention_day1_dod, baselineFromDeviation(row.retention_day1, row.retention_day1_dod), issueStatusById);
     }
-    if (row.retention_day1_wow != null && row.retention_day1_wow <= -15) {
+    if (issueHits.retention_day1?.wow) {
       addHighlight(items, row, 'retention_day1', '周同比偏离', row.retention_day1_wow, baselineFromDeviation(row.retention_day1, row.retention_day1_wow), issueStatusById);
     }
-    if (row.redline_retention_day7) {
+    if (issueHits.retention_day7?.target_deviation) {
       addHighlight(items, row, 'retention_day7', '考核值偏离', row.retention_day7_target_deviation, row.target_retention_day7, issueStatusById);
     }
-    if (row.retention_day7_dod != null && row.retention_day7_dod <= -30) {
+    if (issueHits.retention_day7?.dod) {
       addHighlight(items, row, 'retention_day7', '日环比偏离', row.retention_day7_dod, baselineFromDeviation(row.retention_day7, row.retention_day7_dod), issueStatusById);
     }
-    if (row.retention_day7_wow != null && row.retention_day7_wow <= -15) {
+    if (issueHits.retention_day7?.wow) {
       addHighlight(items, row, 'retention_day7', '周同比偏离', row.retention_day7_wow, baselineFromDeviation(row.retention_day7, row.retention_day7_wow), issueStatusById);
     }
   }
@@ -413,8 +454,14 @@ function buildHighlightItems(
     .map((item, index) => ({ ...item, rank: index + 1 }));
 }
 
-function buildResponse(rows: ReportRow[], reportDate: string, status: string | null, issueStatusById: Map<string, string>) {
-  const highlightItems = buildHighlightItems(rows, reportDate, status, issueStatusById);
+function buildResponse(
+  rows: ReportRow[],
+  reportDate: string,
+  status: string | null,
+  issueStatusById: Map<string, string>,
+  thresholdLookup: AlertThresholdLookup
+) {
+  const highlightItems = buildHighlightItems(rows, reportDate, status, issueStatusById, thresholdLookup);
   return {
     reportDate,
     highlightItems,
@@ -486,7 +533,13 @@ export async function GET(request: NextRequest) {
 
       return NextResponse.json({
         success: true,
-        data: buildResponse(localReportRows(db, rows, alertByRecordId), reportDate, status, issueStatusById),
+        data: buildResponse(
+          localReportRows(db, rows, alertByRecordId),
+          reportDate,
+          status,
+          issueStatusById,
+          buildThresholdLookup(db.alert_threshold_settings)
+        ),
       });
     }
 
@@ -513,7 +566,18 @@ export async function GET(request: NextRequest) {
     if (creativeTypes.length > 0) targetsQuery = targetsQuery.in('creative_type', creativeTypes);
     if (promotionGoals.length > 0) targetsQuery = targetsQuery.in('promotion_goal', promotionGoals);
 
-    const [recordsRes, targetsRes] = await Promise.all([recordsQuery, targetsQuery]);
+    let thresholdsQuery = supabase
+      .from('alert_threshold_settings')
+      .select('product_id, channel_id, creative_type, metric_key, upper_threshold, lower_threshold');
+    if (productIds.length > 0) thresholdsQuery = thresholdsQuery.in('product_id', productIds);
+    if (channelIds.length > 0) thresholdsQuery = thresholdsQuery.in('channel_id', channelIds);
+    if (creativeTypes.length > 0) thresholdsQuery = thresholdsQuery.in('creative_type', creativeTypes);
+
+    const [recordsRes, targetsRes, thresholdRows] = await Promise.all([
+      recordsQuery,
+      targetsQuery,
+      readOptionalAlertThresholdRows<AlertThresholdSettingLike>(thresholdsQuery),
+    ]);
     if (recordsRes.error) throw recordsRes.error;
     if (targetsRes.error) throw targetsRes.error;
 
@@ -521,7 +585,7 @@ export async function GET(request: NextRequest) {
     const alertsRes = recordIds.length > 0
       ? await supabase
         .from('alert_results')
-        .select('id, daily_record_id, status, cost_dod, activations_dod, cpa_dod, cpa_wow, cpa_target_deviation, retention_day1_dod, retention_day1_wow, retention_day1_target_deviation, retention_day7_dod, retention_day7_wow, retention_day7_target_deviation')
+        .select('id, daily_record_id, status, cost_dod, cost_wow, activations_dod, activations_wow, cpa_dod, cpa_wow, cpa_target_deviation, retention_day1_dod, retention_day1_wow, retention_day1_target_deviation, retention_day7_dod, retention_day7_wow, retention_day7_target_deviation')
         .in('daily_record_id', recordIds)
       : { data: [], error: null };
     if (alertsRes.error) throw alertsRes.error;
@@ -572,7 +636,16 @@ export async function GET(request: NextRequest) {
       );
     });
 
-    return NextResponse.json({ success: true, data: buildResponse(rows, reportDate, status, issueStatusById) });
+    return NextResponse.json({
+      success: true,
+      data: buildResponse(
+        rows,
+        reportDate,
+        status,
+        issueStatusById,
+        buildThresholdLookup(thresholdRows)
+      ),
+    });
   } catch (error) {
     console.error('GET /api/daily-report error:', error);
     return NextResponse.json({ success: false, error: 'Failed to fetch daily report' }, { status: 500 });

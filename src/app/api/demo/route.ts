@@ -8,6 +8,7 @@ import { pruneSupabaseBusinessData } from '@/lib/admin/retention';
 import { DEMO_AGENT_CREDENTIALS } from '@/lib/admin/passwords';
 import { DEFAULT_PROMOTION_GOAL } from '@/lib/admin/creativeTypes';
 import { upsertSupabaseDictionaries } from '@/lib/admin/scopes';
+import { recalculateAlertsForRecordIds } from '@/lib/alerts/engine';
 import {
   cascadeDeleteAgents,
   cascadeDeleteRecords,
@@ -80,63 +81,8 @@ interface TargetSnapshot {
   target_retention_day7: number;
 }
 
-type MetricKey =
-  | 'cost'
-  | 'activations'
-  | 'cpa'
-  | 'ctr'
-  | 'cvr'
-  | 'cpm'
-  | 'retention_day1'
-  | 'retention_day7';
-
-const METRIC_KEYS: MetricKey[] = [
-  'cost',
-  'activations',
-  'cpa',
-  'ctr',
-  'cvr',
-  'cpm',
-  'retention_day1',
-  'retention_day7',
-];
-
-function toNumber(value: number | string | null | undefined) {
-  if (value == null || value === '') return null;
-  const next = Number(value);
-  return Number.isFinite(next) ? next : null;
-}
-
 function round(value: number, digits = 2) {
   return Number(value.toFixed(digits));
-}
-
-function percentDelta(current: number | null, baseline: number | null) {
-  if (current == null || baseline == null || baseline === 0) return null;
-  return ((current - baseline) / baseline) * 100;
-}
-
-function round4(value: number | null) {
-  return value == null ? null : Number(value.toFixed(4));
-}
-
-function formatSignedPercent(value: number | null) {
-  if (value == null) return '无基线';
-  return `${value >= 0 ? '+' : ''}${value.toFixed(1)}%`;
-}
-
-function metricValue(record: InsertedRecord | null, key: MetricKey) {
-  if (!record) return null;
-  if (key === 'cpa' && record.cpa == null) {
-    const cost = toNumber(record.cost);
-    const activations = toNumber(record.activations);
-    return cost != null && activations && activations > 0 ? cost / activations : null;
-  }
-  return toNumber(record[key]);
-}
-
-function relationKey(record: Pick<InsertedRecord, 'agent_id' | 'product_id' | 'channel_id' | 'record_date' | 'creative_type' | 'promotion_goal'>) {
-  return `${record.product_id}:${record.agent_id}:${record.channel_id}:${record.record_date}:${record.creative_type}:${record.promotion_goal}`;
 }
 
 function chunk<T>(items: T[], size: number) {
@@ -155,12 +101,6 @@ async function buildDemoPasswordHashByUsername() {
     }
     return [username, await hashPassword(password)] as const;
   })));
-}
-
-function currentTarget(targets: TargetSnapshot[], recordDate: string) {
-  return targets
-    .filter((target) => target.effective_date <= recordDate)
-    .sort((left, right) => right.effective_date.localeCompare(left.effective_date))[0] || null;
 }
 
 function buildTargetSnapshots(agent: DemoAgent, focusDate: dayjs.Dayjs): TargetSnapshot[] {
@@ -251,110 +191,6 @@ function buildRecordRows(
   }
 
   return rows;
-}
-
-function targetScopeKey(record: Pick<InsertedRecord, 'product_id' | 'agent_id' | 'channel_id' | 'creative_type' | 'promotion_goal'>) {
-  return `${record.product_id}:${record.agent_id}:${record.channel_id}:${record.creative_type}:${record.promotion_goal}`;
-}
-
-function buildAlertRows(insertedRecords: InsertedRecord[], targetByScope: Map<string, TargetSnapshot[]>) {
-  const recordByKey = new Map(insertedRecords.map((record) => [relationKey(record), record]));
-
-  return insertedRecords.map((record) => {
-    const yesterday = recordByKey.get(relationKey({
-      ...record,
-      record_date: dayjs(record.record_date).subtract(1, 'day').format('YYYY-MM-DD'),
-    })) || null;
-    const lastWeek = recordByKey.get(relationKey({
-      ...record,
-      record_date: dayjs(record.record_date).subtract(7, 'day').format('YYYY-MM-DD'),
-    })) || null;
-    const target = currentTarget(targetByScope.get(targetScopeKey(record)) || [], record.record_date);
-
-    const deltas = Object.fromEntries(
-      METRIC_KEYS.flatMap((key) => [
-        [`${key}_dod`, round4(percentDelta(metricValue(record, key), metricValue(yesterday, key)))],
-        [`${key}_wow`, round4(percentDelta(metricValue(record, key), metricValue(lastWeek, key)))],
-      ])
-    ) as Record<string, number | null>;
-
-    const cpaDeviation = round4(percentDelta(metricValue(record, 'cpa'), target?.target_cpa ?? null));
-    const day1Deviation = round4(percentDelta(metricValue(record, 'retention_day1'), target?.target_retention_day1 ?? null));
-    const day7Deviation = round4(percentDelta(metricValue(record, 'retention_day7'), target?.target_retention_day7 ?? null));
-    const isCostAlert = deltas.cost_dod != null && (deltas.cost_dod > 50 || deltas.cost_dod < -50);
-    const isActivationsAlert = deltas.activations_dod != null && (deltas.activations_dod > 50 || deltas.activations_dod < -50);
-
-    const isCpaAlert =
-      (deltas.cpa_dod != null && deltas.cpa_dod >= 25) ||
-      (deltas.cpa_wow != null && deltas.cpa_wow >= 15) ||
-      (cpaDeviation != null && cpaDeviation >= 20);
-
-    const isDay1Alert =
-      (deltas.retention_day1_dod != null && deltas.retention_day1_dod <= -30) ||
-      (deltas.retention_day1_wow != null && deltas.retention_day1_wow <= -15) ||
-      (day1Deviation != null && day1Deviation <= -20);
-
-    const isDay7Alert =
-      (deltas.retention_day7_dod != null && deltas.retention_day7_dod <= -30) ||
-      (deltas.retention_day7_wow != null && deltas.retention_day7_wow <= -15) ||
-      (day7Deviation != null && day7Deviation <= -20);
-
-    const summaries = [];
-    if (isCostAlert) {
-      summaries.push(`消耗异常：日环比 ${formatSignedPercent(deltas.cost_dod)}`);
-    }
-    if (isActivationsAlert) {
-      summaries.push(`激活异常：日环比 ${formatSignedPercent(deltas.activations_dod)}`);
-    }
-    if (isCpaAlert) {
-      summaries.push(`CPA异常：日环比 ${formatSignedPercent(deltas.cpa_dod)}，周同比 ${formatSignedPercent(deltas.cpa_wow)}，考核偏离 ${formatSignedPercent(cpaDeviation)}`);
-    }
-    if (isDay1Alert) {
-      summaries.push(`次留异常：日环比 ${formatSignedPercent(deltas.retention_day1_dod)}，周同比 ${formatSignedPercent(deltas.retention_day1_wow)}，考核偏离 ${formatSignedPercent(day1Deviation)}`);
-    }
-    if (isDay7Alert) {
-      summaries.push(`7留异常：日环比 ${formatSignedPercent(deltas.retention_day7_dod)}，周同比 ${formatSignedPercent(deltas.retention_day7_wow)}，考核偏离 ${formatSignedPercent(day7Deviation)}`);
-    }
-
-    const hasAlert = isCostAlert || isActivationsAlert || isCpaAlert || isDay1Alert || isDay7Alert;
-
-    return {
-      daily_record_id: record.id,
-      record_date: record.record_date,
-      agent_id: record.agent_id,
-      product_id: record.product_id,
-      channel_id: record.channel_id,
-      creative_type: record.creative_type,
-      promotion_goal: record.promotion_goal,
-      cost_dod: deltas.cost_dod,
-      activations_dod: deltas.activations_dod,
-      cpa_dod: deltas.cpa_dod,
-      ctr_dod: deltas.ctr_dod,
-      cvr_dod: deltas.cvr_dod,
-      cpm_dod: deltas.cpm_dod,
-      retention_day1_dod: deltas.retention_day1_dod,
-      retention_day7_dod: deltas.retention_day7_dod,
-      cost_wow: deltas.cost_wow,
-      activations_wow: deltas.activations_wow,
-      cpa_wow: deltas.cpa_wow,
-      ctr_wow: deltas.ctr_wow,
-      cvr_wow: deltas.cvr_wow,
-      cpm_wow: deltas.cpm_wow,
-      retention_day1_wow: deltas.retention_day1_wow,
-      retention_day7_wow: deltas.retention_day7_wow,
-      cpa_target_deviation: cpaDeviation,
-      retention_day1_target_deviation: day1Deviation,
-      retention_day7_target_deviation: day7Deviation,
-      is_cost_alert: isCostAlert,
-      is_activations_alert: isActivationsAlert,
-      is_cpa_alert: isCpaAlert,
-      is_retention_day1_alert: isDay1Alert,
-      is_retention_day7_alert: isDay7Alert,
-      has_alert: hasAlert,
-      alert_summary: summaries.length > 0 ? summaries.join('；') : '无站内告警',
-      status: hasAlert ? 'open' : 'resolved',
-    };
-  });
 }
 
 async function deleteIfPresent<T>(
@@ -770,7 +606,6 @@ export async function POST() {
     if (scopeError) throw scopeError;
 
     const focusDate = dayjs().subtract(1, 'day');
-    const targetByScope = new Map<string, TargetSnapshot[]>();
     const targetRows = [];
     const recordRows = [];
 
@@ -784,7 +619,6 @@ export async function POST() {
 
       const snapshots = buildTargetSnapshots(agent, focusDate);
       for (const creativeType of agent.creatives) {
-        targetByScope.set(`${productId}:${agentId}:${channelId}:${creativeType}:${DEFAULT_PROMOTION_GOAL}`, snapshots);
         targetRows.push(...snapshots.map((snapshot, index) => ({
           agent_id: agentId,
           product_id: productId,
@@ -820,14 +654,7 @@ export async function POST() {
       insertedRecords.push(...((data || []) as InsertedRecord[]));
     }
 
-    const alertRows = buildAlertRows(insertedRecords, targetByScope);
-    for (const rows of chunk(alertRows, 200)) {
-      const { error } = await supabase
-        .from('alert_results')
-        .upsert(rows, { onConflict: 'daily_record_id' });
-
-      if (error) throw error;
-    }
+    const alertRows = await recalculateAlertsForRecordIds(supabase, insertedRecords.map((record) => record.id));
     await pruneSupabaseBusinessData(supabase);
 
     const focusDateString = focusDate.format('YYYY-MM-DD');

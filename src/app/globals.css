@@ -393,6 +393,16 @@ body {
   gap: 2px;
 }
 
+.threshold-direction-cell {
+  justify-content: center;
+  width: 96px;
+}
+
+.threshold-direction-cell .ant-input-number {
+  flex: 0 0 64px;
+  width: 64px;
+}
+
 .daily-report-stack {
   display: grid;
   gap: 16px;
