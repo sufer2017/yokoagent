@@ -22,6 +22,34 @@ function toNumberOrNull(value: unknown) {
   return Number.isFinite(next) ? next : null;
 }
 
+type RecordScopeInput = {
+  product_id?: string | null;
+  agent_id?: string | null;
+  channel_id?: string | null;
+  record_date?: string | null;
+  creative_type?: string | null;
+  promotion_goal?: string | null;
+};
+
+function recordScopeKey(record: RecordScopeInput) {
+  return [
+    record.product_id || '',
+    record.agent_id || '',
+    record.channel_id || '',
+    record.record_date || '',
+    record.creative_type || '',
+    record.promotion_goal || '',
+  ].join('\u001f');
+}
+
+function uniqueLastByScope<T extends RecordScopeInput>(records: T[]) {
+  const byScope = new Map<string, T>();
+  for (const record of records) {
+    byScope.set(recordScopeKey(record), record);
+  }
+  return Array.from(byScope.values());
+}
+
 // POST /api/records/batch - Batch upsert records
 export async function POST(request: Request) {
   try {
@@ -139,7 +167,7 @@ export async function POST(request: Request) {
         }
 
         recalculateLocalAlertsForRecordIds(db, savedIds);
-        const savedRecords = savedIds
+        const savedRecords = Array.from(new Set(savedIds))
           .map((id) => db.daily_records.find((record) => record.id === id))
           .filter((record): record is NonNullable<typeof record> => Boolean(record))
           .map((record) => decorateRecord(db, record));
@@ -205,10 +233,11 @@ export async function POST(request: Request) {
         allowedInsertData.push(record);
       }
 
-      const { data, error } = allowedInsertData.length > 0
+      const dedupedInsertData = uniqueLastByScope(allowedInsertData);
+      const { data, error } = dedupedInsertData.length > 0
         ? await supabase
           .from('daily_records')
-          .upsert(allowedInsertData, {
+          .upsert(dedupedInsertData, {
             onConflict: 'product_id,agent_id,channel_id,record_date,creative_type,promotion_goal',
           })
           .select()

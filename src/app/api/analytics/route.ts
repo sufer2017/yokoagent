@@ -495,33 +495,60 @@ async function fetchSupabaseChunks<T>(buildQuery: () => SupabaseRangeQuery<T>) {
   return rows;
 }
 
-function isExpectedAgentDay(targets: Array<Pick<TargetRow, 'agent_id' | 'product_id' | 'channel_id' | 'creative_type' | 'promotion_goal' | 'effective_date' | 'is_running'>>, productId: string, agentId: string, channelId: string, date: string) {
-  const latestByScope = new Map<string, Pick<TargetRow, 'effective_date' | 'is_running'>>();
+type TargetScope = Pick<TargetRow, 'agent_id' | 'product_id' | 'channel_id' | 'creative_type' | 'promotion_goal' | 'effective_date' | 'is_running'>;
+const SCOPE_KEY_SEPARATOR = '\u001f';
+
+function fillScopeKey(productId: string, agentId: string, channelId: string, creativeType: string, promotionGoal: string) {
+  return [productId, agentId, channelId, creativeType || '__default__', promotionGoal || '__default__'].join(SCOPE_KEY_SEPARATOR);
+}
+
+function expectedRunningScopeKeys(
+  targets: TargetScope[],
+  productId: string,
+  agentId: string,
+  channelId: string,
+  date: string,
+  creativeTypes: string[] = [],
+  promotionGoals: string[] = []
+) {
+  const latestByScope = new Map<string, TargetScope>();
   for (const target of targets) {
     if (
       target.product_id !== productId ||
       target.agent_id !== agentId ||
       target.channel_id !== channelId ||
-      target.effective_date > date
+      target.effective_date > date ||
+      (creativeTypes.length > 0 && !creativeTypes.includes(target.creative_type || '')) ||
+      (promotionGoals.length > 0 && !promotionGoals.includes(target.promotion_goal || ''))
     ) {
       continue;
     }
-    const scopeKey = `${target.creative_type || '__default__'}:${target.promotion_goal || '__default__'}`;
+    const scopeKey = fillScopeKey(productId, agentId, channelId, target.creative_type || '', target.promotion_goal || '');
     const existing = latestByScope.get(scopeKey);
     if (!existing || target.effective_date > existing.effective_date) {
       latestByScope.set(scopeKey, target);
     }
   }
-  return Array.from(latestByScope.values()).some((target) => target.is_running);
+  return Array.from(latestByScope.entries())
+    .filter(([, target]) => target.is_running)
+    .map(([scopeKey]) => scopeKey);
 }
 
-function localRunningAgents(db: LocalDb, focusDate: string, productIds: string[], channelIds: string[], agentIds: string[]) {
+function localRunningAgentScopeKeys(
+  db: LocalDb,
+  focusDate: string,
+  productIds: string[],
+  channelIds: string[],
+  agentIds: string[],
+  creativeTypes: string[],
+  promotionGoals: string[]
+) {
   return db.agents
     .filter((agent) => agent.is_active)
     .filter((agent) => productIds.length === 0 || productIds.includes(agent.product_id))
     .filter((agent) => channelIds.length === 0 || channelIds.includes(agent.channel_id))
     .filter((agent) => agentIds.length === 0 || agentIds.includes(agent.id))
-    .filter((agent) => isExpectedAgentDay(db.target_changes, agent.product_id, agent.id, agent.channel_id, focusDate));
+    .flatMap((agent) => expectedRunningScopeKeys(db.target_changes, agent.product_id, agent.id, agent.channel_id, focusDate, creativeTypes, promotionGoals));
 }
 
 function buildResponse(
@@ -535,7 +562,7 @@ function buildResponse(
     agents: Array<{ id: string; name: string; product_id: string; product_name: string; channel_id: string; channel_name: string }>;
     creativeTypes: string[];
     promotionGoals: string[];
-    runningAgentCount: number;
+    runningScopeKeys: string[];
     detailRowsOverride?: DetailRow[];
   }
 ) {
@@ -545,7 +572,14 @@ function buildResponse(
   const chartDays = Math.min(Math.max(dayjs(options.dateTo).diff(dayjs(options.dateFrom), 'day') + 1, 1), 21);
   const dates = listDates(options.dateTo, chartDays);
   const channelNames = Array.from(new Set(sortedRows.map((row) => row.channel_name))).sort((left, right) => left.localeCompare(right, 'zh-Hans-CN'));
-  const filledAgents = new Set(sortedRows.filter((row) => row.record_date === options.dateTo).map((row) => row.agent_id)).size;
+  const expectedScopeKeys = new Set(options.runningScopeKeys);
+  const expectedAgentIds = new Set(Array.from(expectedScopeKeys).map((scopeKey) => scopeKey.split(SCOPE_KEY_SEPARATOR)[1]).filter(Boolean));
+  const filledAgents = new Set(sortedRows
+    .filter((row) => row.record_date === options.dateTo)
+    .filter((row) => expectedScopeKeys.has(fillScopeKey(row.product_id, row.agent_id, row.channel_id, row.creative_type, row.promotion_goal)))
+    .map((row) => row.agent_id)).size;
+  const expectedAgents = expectedAgentIds.size;
+  const fillRate = expectedAgents > 0 ? Math.min(100, Math.round((filledAgents / expectedAgents) * 100)) : 0;
 
   return {
     dateFrom: options.dateFrom,
@@ -558,9 +592,9 @@ function buildResponse(
       retentionDay7: summary.retentionDay7,
     },
     fillProgress: {
-      expectedAgents: options.runningAgentCount,
+      expectedAgents,
       filledAgents,
-      fillRate: options.runningAgentCount > 0 ? Math.round((filledAgents / options.runningAgentCount) * 100) : 0,
+      fillRate,
     },
     chartSeries: {
       costTrend: buildChart(sortedRows, dates, 'cost', channelNames),
@@ -669,7 +703,7 @@ export async function GET(request: NextRequest) {
           dateFrom,
           dateTo,
           pagination,
-          runningAgentCount: localRunningAgents(db, dateTo, productIds, channelIds, agentIds).length,
+          runningScopeKeys: localRunningAgentScopeKeys(db, dateTo, productIds, channelIds, agentIds, creativeTypes, promotionGoals),
           products: optionProducts.map((product) => ({ id: product.id, name: product.name })),
           channels: optionChannels.map((channel) => ({ id: channel.id, name: channel.name })),
           agents: optionAgents.map((agent) => ({
@@ -809,13 +843,12 @@ export async function GET(request: NextRequest) {
       is_active: Boolean(agent.is_active),
     }));
     const activeProductAgents = agents.filter((agent) => agent.is_active && agent.product_is_active);
-    const runningAgentCount = activeProductAgents
+    const runningScopeKeys = activeProductAgents
       .filter((agent) => agent.is_active)
       .filter((agent) => productIds.length === 0 || productIds.includes(agent.product_id))
       .filter((agent) => channelIds.length === 0 || channelIds.includes(agent.channel_id))
       .filter((agent) => agentIds.length === 0 || agentIds.includes(agent.id))
-      .filter((agent) => isExpectedAgentDay(targets, agent.product_id, agent.id, agent.channel_id, dateTo))
-      .length;
+      .flatMap((agent) => expectedRunningScopeKeys(targets, agent.product_id, agent.id, agent.channel_id, dateTo, creativeTypes, promotionGoals));
 
     const filteredRows = applyMetricFilters(rows, metricFilters);
     if (wantsCsv) {
@@ -828,7 +861,7 @@ export async function GET(request: NextRequest) {
         dateFrom,
         dateTo,
         pagination,
-        runningAgentCount,
+        runningScopeKeys,
         products: ((productsRes.data || []) as Array<Record<string, unknown>>).map((product) => ({
           id: String(product.id),
           name: String(product.name),

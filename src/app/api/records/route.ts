@@ -182,18 +182,31 @@ export async function POST(request: Request) {
         if (!isLocalScopeAuthorized(db, session.agentId!, creativeType, promotionGoal)) {
           throw new Error('该体裁/投放目标未授权，请联系管理员配置');
         }
-        if (db.daily_records.some((record) => (
+        const existing = db.daily_records.find((record) => (
           record.agent_id === session.agentId &&
           record.product_id === session.productId &&
           record.channel_id === session.channelId &&
           record.record_date === body.record_date &&
           record.creative_type === creativeType &&
           record.promotion_goal === promotionGoal
-        ))) {
-          throw new Error('该日期/体裁/投放目标已存在记录，请直接编辑');
+        ));
+        const timestamp = nowIso();
+        if (existing) {
+          Object.assign(existing, {
+            cost: Number(body.cost || 0),
+            activations: Number(body.activations || 0),
+            cpa: computedCpa(body.cost, body.activations),
+            ctr: toNumberOrNull(body.ctr),
+            cvr: toNumberOrNull(body.cvr),
+            cpm: toNumberOrNull(body.cpm),
+            retention_day1: toNumberOrNull(body.retention_day1),
+            retention_day7: toNumberOrNull(body.retention_day7),
+            updated_at: timestamp,
+          });
+          recalculateLocalAlertsForRecordIds(db, [existing.id]);
+          return decorateRecord(db, existing);
         }
 
-        const timestamp = nowIso();
         const record = {
           id: newId(),
           agent_id: session.agentId!,
@@ -230,7 +243,7 @@ export async function POST(request: Request) {
 
     const { data, error } = await supabase
       .from('daily_records')
-      .insert({
+      .upsert({
         agent_id: session.agentId,
         product_id: session.productId,
         channel_id: session.channelId,
@@ -246,17 +259,13 @@ export async function POST(request: Request) {
         retention_day1: toNumberOrNull(body.retention_day1),
         retention_day7: toNumberOrNull(body.retention_day7),
         created_by: session.agentName,
+      }, {
+        onConflict: 'product_id,agent_id,channel_id,record_date,creative_type,promotion_goal',
       })
       .select()
       .single();
 
     if (error) {
-      if (error.code === '23505') {
-        return NextResponse.json(
-          { success: false, error: '该日期/体裁/投放目标已存在记录，请直接编辑' },
-          { status: 409 }
-        );
-      }
       throw error;
     }
 
