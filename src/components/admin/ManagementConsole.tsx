@@ -25,6 +25,7 @@ import type { Agent, Channel, CreativeTypeItem, Product, PromotionGoalItem } fro
 import { DEMO_AGENT_CREDENTIALS, generateAgentPassword } from '@/lib/admin/passwords';
 import { useResizableColumns } from '@/components/common/useResizableColumns';
 import { DEFAULT_PROMOTION_GOAL, normalizeAuthorizedScopes, normalizeCreativeTypes } from '@/lib/admin/creativeTypes';
+import { boolText, downloadCsv, localDateStamp } from '@/lib/admin/clientCsv';
 
 const { Title, Paragraph, Text } = Typography;
 
@@ -259,6 +260,59 @@ export default function ManagementConsole() {
     } else {
       messageApi.error(payload.error || '更新失败');
     }
+  };
+
+  const exportActiveTab = () => {
+    const stamp = localDateStamp();
+    if (activeTab === 'agents') {
+      downloadCsv(
+        `yokoagent-management-agents-${stamp}.csv`,
+        ['产品', '渠道', '代理商', '体裁', '投放目标', '授权范围', '登录账号', '密码', '飞书webhook', '状态', '创建时间', '更新时间'],
+        agents.map((agent) => {
+          const scopes = normalizeAuthorizedScopes(agent.authorized_scopes, agent.creative_types)
+            .filter((scope) => scope.is_active);
+          return [
+            agent.product_name,
+            agent.channel_name,
+            agent.name,
+            normalizeCreativeTypes(agent.creative_types).join('、'),
+            normalizeCreativeTypes(scopes.map((scope) => scope.promotion_goal)).join('、'),
+            scopes.map((scope) => `${scope.creative_type}/${scope.promotion_goal}`).join('；'),
+            agent.username,
+            agent.password_plaintext || '',
+            agent.feishu_webhook || '',
+            boolText(agent.is_active),
+            agent.created_at,
+            agent.updated_at,
+          ];
+        })
+      );
+    } else if (activeTab === 'products') {
+      downloadCsv(
+        `yokoagent-management-products-${stamp}.csv`,
+        ['产品', '状态', '创建时间', '更新时间'],
+        products.map((product) => [product.name, boolText(product.is_active), product.created_at, product.updated_at])
+      );
+    } else if (activeTab === 'channels') {
+      downloadCsv(
+        `yokoagent-management-channels-${stamp}.csv`,
+        ['渠道', '状态', '创建时间', '更新时间'],
+        channels.map((channel) => [channel.name, boolText(channel.is_active), channel.created_at, channel.updated_at])
+      );
+    } else if (activeTab === 'creativeTypes') {
+      downloadCsv(
+        `yokoagent-management-creative-types-${stamp}.csv`,
+        ['体裁', '状态', '创建时间', '更新时间'],
+        creativeTypeItems.map((item) => [item.name, boolText(item.is_active), item.created_at, item.updated_at])
+      );
+    } else {
+      downloadCsv(
+        `yokoagent-management-promotion-goals-${stamp}.csv`,
+        ['投放目标', '状态', '创建时间', '更新时间'],
+        promotionGoalItems.map((item) => [item.name, boolText(item.is_active), item.created_at, item.updated_at])
+      );
+    }
+    messageApi.success('已导出当前明细 CSV');
   };
 
   const importProps: UploadProps = {
@@ -520,6 +574,7 @@ export default function ManagementConsole() {
             />
             <Space>
               <Button href="/api/management/template" icon={<DownloadOutlined />}>下载模板 CSV</Button>
+              <Button icon={<DownloadOutlined />} onClick={exportActiveTab}>导出当前明细 CSV</Button>
               <Upload {...importProps}>
                 <Button icon={<UploadOutlined />}>上传 CSV 批量添加</Button>
               </Upload>

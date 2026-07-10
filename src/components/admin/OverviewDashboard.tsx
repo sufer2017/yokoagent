@@ -24,6 +24,7 @@ import type { Dayjs } from 'dayjs';
 import { BarChartOutlined, ReloadOutlined } from '@ant-design/icons';
 import MbiMultiSelect from '@/components/admin/MbiMultiSelect';
 import { useResizableColumns } from '@/components/common/useResizableColumns';
+import { ExportDateRangeButton } from '@/components/admin/ExportDateRangeButton';
 
 const Bar = dynamic(async () => (await import('@ant-design/charts')).Bar as React.ComponentType<Record<string, unknown>>, { ssr: false });
 
@@ -357,6 +358,21 @@ export default function OverviewDashboard({
   );
 
   const summaryCards = data?.summaryCards;
+  const buildDetailExportHref = useCallback((range: [Dayjs, Dayjs]) => {
+    const [dateFrom, dateTo] = normalizeRange(range);
+    const params = new URLSearchParams({
+      dateFrom: dateFrom.format('YYYY-MM-DD'),
+      dateTo: dateTo.format('YYYY-MM-DD'),
+      format: 'csv',
+    });
+    if (effectiveProductIds.length > 0) params.set('productIds', effectiveProductIds.join(','));
+    if (effectiveChannelIds.length > 0) params.set('channelIds', effectiveChannelIds.join(','));
+    if (effectiveAgentIds.length > 0) params.set('agentIds', effectiveAgentIds.join(','));
+    if (promotionGoals.length > 0) params.set('promotionGoals', promotionGoals.join(','));
+    if (statuses.length > 0) params.set('statuses', statuses.join(','));
+    if (filledBy.trim()) params.set('filledBy', filledBy.trim());
+    return `/api/fill-status?${params.toString()}`;
+  }, [effectiveAgentIds, effectiveChannelIds, effectiveProductIds, filledBy, promotionGoals, statuses]);
 
   return (
     <>
@@ -375,7 +391,10 @@ export default function OverviewDashboard({
                   : '统一筛选填报状态、截止时间和填写人，聚焦代理是否按时完成 T-1 数据提交。'}
               </Paragraph>
             </div>
-            <Button icon={<ReloadOutlined />} onClick={fetchStatus}>刷新</Button>
+            <Space wrap>
+              <ExportDateRangeButton initialRange={dateRange} buildHref={buildDetailExportHref} />
+              <Button icon={<ReloadOutlined />} onClick={fetchStatus}>刷新</Button>
+            </Space>
           </div>
         </Card>
 
@@ -496,7 +515,11 @@ export default function OverviewDashboard({
           )}
         </Card>
 
-        <Card className="section-card" title="填报明细表">
+        <Card
+          className="section-card"
+          title="填报明细表"
+          extra={<ExportDateRangeButton initialRange={dateRange} buildHref={buildDetailExportHref} />}
+        >
           <Table
             rowKey="id"
             loading={loading}

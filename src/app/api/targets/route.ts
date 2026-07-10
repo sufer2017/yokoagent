@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabase, hasSupabaseConfig } from '@/lib/supabase/server';
 import { getSession } from '@/lib/auth/session';
+import { csvResponse } from '@/lib/admin/csv';
 import { DEFAULT_PROMOTION_GOAL, normalizeDictionaryName } from '@/lib/admin/creativeTypes';
 import { isSupabaseScopeAuthorized } from '@/lib/admin/scopes';
 import { decorateTarget, isLocalScopeAuthorized, mutateLocalDb, newId, nowIso, readLocalDb } from '@/lib/local-db/store';
@@ -9,6 +10,36 @@ function toNumberOrNull(value: unknown) {
   if (value === '' || value == null) return null;
   const next = Number(value);
   return Number.isFinite(next) ? next : null;
+}
+
+function csvValue(value: string | number | boolean | null | undefined) {
+  if (value == null) return '';
+  if (typeof value === 'boolean') return value ? '是' : '否';
+  return String(value);
+}
+
+function targetsCsvResponse(rows: Array<Record<string, unknown>>, dateFrom: string | null, dateTo: string | null) {
+  const filenameDate = dateFrom && dateTo ? `${dateFrom}_${dateTo}` : new Date().toISOString().slice(0, 10);
+  return csvResponse(
+    `yokoagent-target-history-${filenameDate}.csv`,
+    ['生效日期', '产品', '渠道', '代理商', '体裁', '投放目标', '是否在投', '考核CPA', '考核次留(%)', '考核7留(%)', '激活量级上限', '备注', '创建时间', '更新时间'],
+    rows.map((row) => [
+      csvValue(row.effective_date as string | undefined),
+      csvValue(row.product_name as string | undefined),
+      csvValue(row.channel_name as string | undefined),
+      csvValue(row.agent_name as string | undefined),
+      csvValue(row.creative_type as string | undefined),
+      csvValue((row.promotion_goal as string | undefined) || DEFAULT_PROMOTION_GOAL),
+      csvValue(row.is_running as boolean | undefined),
+      csvValue(row.target_cpa as number | string | null | undefined),
+      csvValue(row.target_retention_day1 as number | string | null | undefined),
+      csvValue(row.target_retention_day7 as number | string | null | undefined),
+      csvValue(row.activation_cap as number | string | null | undefined),
+      csvValue(row.note as string | null | undefined),
+      csvValue(row.created_at as string | undefined),
+      csvValue(row.updated_at as string | undefined),
+    ])
+  );
 }
 
 // GET /api/targets - Admin target history
@@ -23,6 +54,9 @@ export async function GET(request: NextRequest) {
     const productId = searchParams.get('productId');
     const agentId = searchParams.get('agentId');
     const channelId = searchParams.get('channelId');
+    const dateFrom = searchParams.get('dateFrom');
+    const dateTo = searchParams.get('dateTo');
+    const wantsCsv = searchParams.get('format') === 'csv';
 
     if (!hasSupabaseConfig()) {
       const db = await readLocalDb();
@@ -30,12 +64,15 @@ export async function GET(request: NextRequest) {
         .filter((target) => !productId || target.product_id === productId)
         .filter((target) => !agentId || target.agent_id === agentId)
         .filter((target) => !channelId || target.channel_id === channelId)
+        .filter((target) => !dateFrom || target.effective_date >= dateFrom)
+        .filter((target) => !dateTo || target.effective_date <= dateTo)
         .sort((left, right) => (
           right.effective_date.localeCompare(left.effective_date) ||
           right.created_at.localeCompare(left.created_at)
         ))
         .map((target) => decorateTarget(db, target));
 
+      if (wantsCsv) return targetsCsvResponse(rows, dateFrom, dateTo);
       return NextResponse.json({ success: true, data: rows });
     }
 
@@ -49,6 +86,8 @@ export async function GET(request: NextRequest) {
     if (productId) query = query.eq('product_id', productId);
     if (agentId) query = query.eq('agent_id', agentId);
     if (channelId) query = query.eq('channel_id', channelId);
+    if (dateFrom) query = query.gte('effective_date', dateFrom);
+    if (dateTo) query = query.lte('effective_date', dateTo);
 
     const { data, error } = await query;
     if (error) throw error;
@@ -63,6 +102,7 @@ export async function GET(request: NextRequest) {
       channels: undefined,
     }));
 
+    if (wantsCsv) return targetsCsvResponse(rows, dateFrom, dateTo);
     return NextResponse.json({ success: true, data: rows });
   } catch (error) {
     console.error('GET /api/targets error:', error);

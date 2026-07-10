@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import dayjs from 'dayjs';
 import { createServerSupabase, hasSupabaseConfig } from '@/lib/supabase/server';
 import { getSession } from '@/lib/auth/session';
+import { csvResponse } from '@/lib/admin/csv';
 import {
   beijingDeadlineIso,
   beijingDeadlineLabel,
@@ -79,6 +80,14 @@ const STATUS_ORDER: Record<FillStatus, number> = {
   not_required: 4,
 };
 
+const STATUS_LABEL: Record<FillStatus, string> = {
+  missing: '逾期未填',
+  pending: '待填',
+  late: '逾期已填',
+  on_time: '准时已填',
+  not_required: '无需填报',
+};
+
 function relationName(value: unknown) {
   const relation = Array.isArray(value) ? value[0] : value as { name?: string } | null;
   return relation?.name || '';
@@ -153,12 +162,12 @@ function parseList(searchParams: URLSearchParams, key: string, legacyKey?: strin
   return Array.from(new Set(raw.flatMap((value) => value.split(',')).map((value) => value.trim()).filter(Boolean)));
 }
 
-function clampDateRange(searchParams: URLSearchParams) {
+function clampDateRange(searchParams: URLSearchParams, maxDays = 21) {
   const legacyFocusDate = searchParams.get('date');
   const legacyDays = Number(searchParams.get('days') || 7);
   const dateTo = searchParams.get('dateTo') || legacyFocusDate || dayjs().subtract(1, 'day').format('YYYY-MM-DD');
-  const requestedFrom = searchParams.get('dateFrom') || dayjs(dateTo).subtract(Math.min(Math.max(legacyDays, 1), 21) - 1, 'day').format('YYYY-MM-DD');
-  const days = Math.min(Math.max(dayjs(dateTo).diff(dayjs(requestedFrom), 'day') + 1, 1), 21);
+  const requestedFrom = searchParams.get('dateFrom') || dayjs(dateTo).subtract(Math.min(Math.max(legacyDays, 1), maxDays) - 1, 'day').format('YYYY-MM-DD');
+  const days = Math.min(Math.max(dayjs(dateTo).diff(dayjs(requestedFrom), 'day') + 1, 1), maxDays);
   const dateFrom = dayjs(dateTo).subtract(days - 1, 'day').format('YYYY-MM-DD');
   return { dateFrom, dateTo, dates: listDates(dateTo, days) };
 }
@@ -350,6 +359,37 @@ function buildResponse(
   };
 }
 
+function csvValue(value: string | number | boolean | string[] | null | undefined) {
+  if (Array.isArray(value)) return value.join('、');
+  if (value == null) return '';
+  if (typeof value === 'boolean') return value ? '是' : '否';
+  return String(value);
+}
+
+function fillStatusCsvResponse(rows: DetailRow[], dateFrom: string, dateTo: string) {
+  return csvResponse(
+    `yokoagent-fill-detail-${dateFrom}_${dateTo}.csv`,
+    ['日期', '产品', '渠道', '体裁', '投放目标', '代理商', '应填', '已填', '填报状态', '是否逾期', '截止时间', '首条填报时间', '最后修改时间', '填报行数', '填写人'],
+    rows.map((row) => [
+      row.date,
+      row.product_name,
+      row.channel_name,
+      row.creative_type,
+      row.promotion_goal,
+      row.agent_name,
+      csvValue(row.expected),
+      csvValue(row.filled),
+      STATUS_LABEL[row.status],
+      csvValue(row.is_late),
+      row.deadline_label,
+      csvValue(row.first_filled_at),
+      csvValue(row.last_modified_at),
+      csvValue(row.record_count),
+      csvValue(row.filled_by),
+    ])
+  );
+}
+
 export async function GET(request: NextRequest) {
   try {
     const session = await getSession();
@@ -364,7 +404,8 @@ export async function GET(request: NextRequest) {
     }
 
     const { searchParams } = new URL(request.url);
-    const { dateTo, dates } = clampDateRange(searchParams);
+    const wantsCsv = searchParams.get('format') === 'csv';
+    const { dateFrom, dateTo, dates } = clampDateRange(searchParams, wantsCsv ? 366 : 21);
     const filters = {
       productIds: parseList(searchParams, 'productIds', 'productId'),
       channelIds: parseList(searchParams, 'channelIds', 'channelId'),
@@ -412,15 +453,20 @@ export async function GET(request: NextRequest) {
           updated_at: record.updated_at,
         }));
 
+      const responseData = buildResponse(
+        agents,
+        records,
+        db.target_changes,
+        dates,
+        filters
+      );
+      if (wantsCsv) {
+        return fillStatusCsvResponse(responseData.detailRows, dateFrom, dateTo);
+      }
+
       return NextResponse.json({
         success: true,
-        data: buildResponse(
-          agents,
-          records,
-          db.target_changes,
-          dates,
-          filters
-        ),
+        data: responseData,
       });
     }
 
@@ -485,15 +531,20 @@ export async function GET(request: NextRequest) {
     }));
     const targets = (targetsRes.data || []) as TargetRow[];
 
+    const responseData = buildResponse(
+      agents,
+      records,
+      targets,
+      dates,
+      filters
+    );
+    if (wantsCsv) {
+      return fillStatusCsvResponse(responseData.detailRows, dateFrom, dateTo);
+    }
+
     return NextResponse.json({
       success: true,
-      data: buildResponse(
-        agents,
-        records,
-        targets,
-        dates,
-        filters
-      ),
+      data: responseData,
     });
   } catch (error) {
     console.error('GET /api/fill-status error:', error);

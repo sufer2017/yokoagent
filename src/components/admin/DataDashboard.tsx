@@ -27,6 +27,8 @@ import dayjs from 'dayjs';
 import { AreaChartOutlined, DeleteOutlined, DownloadOutlined, PlusOutlined, ReloadOutlined, UploadOutlined } from '@ant-design/icons';
 import MbiMultiSelect from '@/components/admin/MbiMultiSelect';
 import { useResizableColumns } from '@/components/common/useResizableColumns';
+import { ExportDateRangeButton } from '@/components/admin/ExportDateRangeButton';
+import type { Dayjs } from 'dayjs';
 
 const Line = dynamic(async () => (await import('@ant-design/charts')).Line as React.ComponentType<Record<string, unknown>>, { ssr: false });
 
@@ -490,6 +492,22 @@ export default function DataDashboard({
 
   const tableRows = useMemo(() => aggregateRows(data?.detailRows || [], summaryMode, aggregateMethod), [aggregateMethod, data?.detailRows, summaryMode]);
   const summary = data?.detailSummary || null;
+  const buildDetailExportHref = useCallback((range: [Dayjs, Dayjs]) => {
+    const params = new URLSearchParams({
+      dateFrom: range[0].format('YYYY-MM-DD'),
+      dateTo: range[1].format('YYYY-MM-DD'),
+      format: 'csv',
+    });
+    if (effectiveProductIds.length > 0) params.set('productIds', effectiveProductIds.join(','));
+    if (effectiveChannelIds.length > 0) params.set('channelIds', effectiveChannelIds.join(','));
+    if (effectiveAgentIds.length > 0) params.set('agentIds', effectiveAgentIds.join(','));
+    if (creativeTypes.length > 0) params.set('creativeTypes', creativeTypes.join(','));
+    if (promotionGoals.length > 0) params.set('promotionGoals', promotionGoals.join(','));
+    if (completeMetricFilters.length > 0) {
+      params.set('metricFilters', JSON.stringify(completeMetricFilters.map(({ metric, operator, value }) => ({ metric, operator, value }))));
+    }
+    return `/api/analytics?${params.toString()}`;
+  }, [completeMetricFilters, creativeTypes, effectiveAgentIds, effectiveChannelIds, effectiveProductIds, promotionGoals]);
 
   const addMetricFilter = () => {
     setMetricFilters((current) => {
@@ -686,6 +704,7 @@ export default function DataDashboard({
               {!isAgentScope && (
                 <>
                   <Button href="/api/import/template" icon={<DownloadOutlined />}>下载 T-1 模板</Button>
+                  <ExportDateRangeButton initialRange={dateRange} buildHref={buildDetailExportHref} />
                   <Upload {...importProps}>
                     <Button icon={<UploadOutlined />} loading={importing}>上传历史 T-1 CSV</Button>
                   </Upload>
@@ -848,6 +867,7 @@ export default function DataDashboard({
           title="数据明细表"
           extra={(
             <Space wrap>
+              <ExportDateRangeButton initialRange={dateRange} buildHref={buildDetailExportHref} />
               <Text type="secondary">汇总分析</Text>
               <Select
                 value={summaryMode}

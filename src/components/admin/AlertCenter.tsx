@@ -18,9 +18,11 @@ import {
 } from 'antd';
 import type { TableColumnsType } from 'antd';
 import dayjs from 'dayjs';
+import type { Dayjs } from 'dayjs';
 import { AreaChartOutlined, CheckCircleOutlined, CopyOutlined, DownloadOutlined, ReloadOutlined, SettingOutlined } from '@ant-design/icons';
 import { useResizableColumns } from '@/components/common/useResizableColumns';
 import { ALERT_THRESHOLD_METRICS, type AlertThresholdMetricKey } from '@/lib/admin/alertThresholds';
+import { ExportDateRangeButton } from '@/components/admin/ExportDateRangeButton';
 
 const { RangePicker } = DatePicker;
 const { Title, Paragraph, Text } = Typography;
@@ -630,6 +632,20 @@ export default function AlertCenter({
 
   const aimeMarkdown = useMemo(() => buildAimeMarkdown(dailyReport), [dailyReport]);
   const detailRows = useMemo(() => metricDetailRows(rows), [rows]);
+  const buildDetailExportHref = useCallback((range: [Dayjs, Dayjs]) => {
+    const params = new URLSearchParams({
+      dateFrom: range[0].format('YYYY-MM-DD'),
+      dateTo: range[1].format('YYYY-MM-DD'),
+      status,
+      hasAlert: 'true',
+      format: 'csv',
+    });
+    if (isAgentScope && fixedProductId) params.set('productId', fixedProductId);
+    if (isAgentScope && fixedChannelId) params.set('channelId', fixedChannelId);
+    if (isAgentScope && fixedAgentId) params.set('agentId', fixedAgentId);
+    if (promotionGoal) params.set('promotionGoal', promotionGoal);
+    return `/api/alerts?${params.toString()}`;
+  }, [fixedAgentId, fixedChannelId, fixedProductId, isAgentScope, promotionGoal, status]);
   const promotionGoalOptions = useMemo(() => (
     Array.from(new Set([
       ...rows.map((row) => row.promotion_goal).filter(Boolean),
@@ -1043,6 +1059,7 @@ export default function AlertCenter({
               />
             </Space>
             <Space wrap>
+              <ExportDateRangeButton initialRange={detailDateRange} buildHref={buildDetailExportHref} />
               {!isAgentScope && (
                 <>
                   <Button icon={<SettingOutlined />} onClick={openThresholdSettings}>告警阈值设置</Button>
@@ -1108,6 +1125,7 @@ export default function AlertCenter({
           title="告警明细"
           extra={(
             <Space wrap>
+              <ExportDateRangeButton initialRange={detailDateRange} buildHref={buildDetailExportHref} />
               <Text strong>日期筛选</Text>
               <RangePicker
                 value={detailDateRange}

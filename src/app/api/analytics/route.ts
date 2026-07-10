@@ -15,6 +15,7 @@ import {
   type TargetLike,
 } from '@/lib/admin/metrics';
 import { defaultBusinessAnchorDate } from '@/lib/admin/dates';
+import { csvResponse } from '@/lib/admin/csv';
 import { latestTargetForRecord, readLocalDb, type LocalDailyRecord, type LocalDb } from '@/lib/local-db/store';
 
 type MetricFilterKey = 'cost' | 'activations' | 'cpa' | 'retention_day1' | 'retention_day7';
@@ -393,6 +394,88 @@ function buildDetailSummary(rows: DetailRow[]): DetailRow | null {
   };
 }
 
+function csvValue(value: string | number | boolean | null | undefined) {
+  if (value == null) return '';
+  if (typeof value === 'boolean') return value ? '是' : '否';
+  return String(value);
+}
+
+function analyticsCsvResponse(rows: DetailRow[], dateFrom: string, dateTo: string) {
+  return csvResponse(
+    `yokoagent-data-detail-${dateFrom}_${dateTo}.csv`,
+    [
+      '日期',
+      '产品',
+      '渠道',
+      '体裁',
+      '投放目标',
+      '代理商',
+      '消耗',
+      '消耗日环比(%)',
+      '激活',
+      '激活日环比(%)',
+      'CPA',
+      '考核CPA',
+      'CPA差异百分比(%)',
+      'CPA日环比(%)',
+      'CPA周同比(%)',
+      'CTR(%)',
+      'CVR(%)',
+      'CPM',
+      '次留(%)',
+      '考核次留(%)',
+      '次留差异百分比(%)',
+      '次留日环比(%)',
+      '次留周同比(%)',
+      '7留(%)',
+      '考核7留(%)',
+      '7留差异百分比(%)',
+      '7留日环比(%)',
+      '7留周同比(%)',
+      '激活量级上限',
+      'CPA红线',
+      '次留红线',
+      '7留红线',
+      '红线数量',
+    ],
+    sortDetailRows(rows).map((row) => [
+      row.record_date,
+      row.product_name,
+      row.channel_name,
+      row.creative_type,
+      row.promotion_goal,
+      row.agent_name,
+      csvValue(row.cost),
+      csvValue(row.cost_dod),
+      csvValue(row.activations),
+      csvValue(row.activations_dod),
+      csvValue(row.cpa),
+      csvValue(row.target_cpa),
+      csvValue(row.cpa_target_deviation),
+      csvValue(row.cpa_dod),
+      csvValue(row.cpa_wow),
+      csvValue(row.ctr),
+      csvValue(row.cvr),
+      csvValue(row.cpm),
+      csvValue(row.retention_day1),
+      csvValue(row.target_retention_day1),
+      csvValue(row.retention_day1_target_deviation),
+      csvValue(row.retention_day1_dod),
+      csvValue(row.retention_day1_wow),
+      csvValue(row.retention_day7),
+      csvValue(row.target_retention_day7),
+      csvValue(row.retention_day7_target_deviation),
+      csvValue(row.retention_day7_dod),
+      csvValue(row.retention_day7_wow),
+      csvValue(row.activation_cap),
+      csvValue(row.redline_cpa),
+      csvValue(row.redline_retention_day1),
+      csvValue(row.redline_retention_day7),
+      csvValue(row.redline_count),
+    ])
+  );
+}
+
 interface SupabaseRangeQuery<T> {
   range: (from: number, to: number) => PromiseLike<{
     data: T[] | null;
@@ -522,6 +605,7 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const dateTo = searchParams.get('dateTo') || defaultBusinessAnchorDate();
     const dateFrom = searchParams.get('dateFrom') || dayjs(dateTo).subtract(20, 'day').format('YYYY-MM-DD');
+    const wantsCsv = searchParams.get('format') === 'csv';
     const pagination = parsePagination(searchParams);
     let productIds = parseList(searchParams, 'productIds', 'productId');
     let channelIds = parseList(searchParams, 'channelIds', 'channelId');
@@ -574,9 +658,14 @@ export async function GET(request: NextRequest) {
           );
         });
 
+      const filteredRows = applyMetricFilters(rows, metricFilters);
+      if (wantsCsv) {
+        return analyticsCsvResponse(filteredRows, dateFrom, dateTo);
+      }
+
       return NextResponse.json({
         success: true,
-        data: buildResponse(applyMetricFilters(rows, metricFilters), {
+        data: buildResponse(filteredRows, {
           dateFrom,
           dateTo,
           pagination,
@@ -728,9 +817,14 @@ export async function GET(request: NextRequest) {
       .filter((agent) => isExpectedAgentDay(targets, agent.product_id, agent.id, agent.channel_id, dateTo))
       .length;
 
+    const filteredRows = applyMetricFilters(rows, metricFilters);
+    if (wantsCsv) {
+      return analyticsCsvResponse(filteredRows, dateFrom, dateTo);
+    }
+
     return NextResponse.json({
       success: true,
-      data: buildResponse(applyMetricFilters(rows, metricFilters), {
+      data: buildResponse(filteredRows, {
         dateFrom,
         dateTo,
         pagination,

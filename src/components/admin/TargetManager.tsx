@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Button,
   Card,
@@ -20,11 +20,13 @@ import {
   message,
 } from 'antd';
 import dayjs from 'dayjs';
+import type { Dayjs } from 'dayjs';
 import { DeleteOutlined, DownloadOutlined, PlusOutlined, ReloadOutlined, UploadOutlined } from '@ant-design/icons';
 import type { UploadProps } from 'antd';
 import type { Agent, Channel, Product, TargetChange } from '@/types/database';
 import { useResizableColumns } from '@/components/common/useResizableColumns';
 import { DEFAULT_PROMOTION_GOAL, normalizeAuthorizedScopes } from '@/lib/admin/creativeTypes';
+import { ExportDateRangeButton } from '@/components/admin/ExportDateRangeButton';
 
 const { Title, Paragraph, Text } = Typography;
 
@@ -72,6 +74,22 @@ export default function TargetManager() {
   const selectedAgentId = Form.useWatch('agent_id', form) as string | undefined;
   const selectedCreativeType = Form.useWatch('creative_type', form) as string | undefined;
   const selectedAgent = agents.find((agent) => agent.id === selectedAgentId);
+  const targetExportRange = useMemo<[Dayjs, Dayjs]>(() => {
+    const validDates = targets
+      .map((target) => dayjs(target.effective_date))
+      .filter((date) => date.isValid())
+      .sort((left, right) => left.valueOf() - right.valueOf());
+    if (validDates.length === 0) return [dayjs().subtract(30, 'day'), dayjs()];
+    return [validDates[0], validDates[validDates.length - 1]];
+  }, [targets]);
+  const buildTargetExportHref = useCallback((range: [Dayjs, Dayjs]) => {
+    const params = new URLSearchParams({
+      format: 'csv',
+      dateFrom: range[0].format('YYYY-MM-DD'),
+      dateTo: range[1].format('YYYY-MM-DD'),
+    });
+    return `/api/targets?${params.toString()}`;
+  }, []);
 
   useEffect(() => {
     if (selectedAgent) {
@@ -311,6 +329,7 @@ export default function TargetManager() {
                 新增考核记录
               </Button>
               <Button href="/api/targets/template" icon={<DownloadOutlined />}>下载模板 CSV</Button>
+              <ExportDateRangeButton initialRange={targetExportRange} buildHref={buildTargetExportHref} label="导出指标历史 CSV" />
               <Upload {...importProps}>
                 <Button icon={<UploadOutlined />}>上传 CSV 批量添加</Button>
               </Upload>
